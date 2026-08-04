@@ -1,0 +1,21 @@
+# Local AWS configuration and generated state
+config/test.env
+config/*.local
+artifacts/
+tmp/
+
+# Python environments and caches
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local tooling and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.log

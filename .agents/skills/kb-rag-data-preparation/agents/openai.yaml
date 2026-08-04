@@ -1,0 +1,4 @@
+interface:
+  display_name: "KB/RAG Data Preparation"
+  short_description: "Improve and govern KB/RAG ingestion quality"
+  default_prompt: "Use $kb-rag-data-preparation to assess and improve this corpus."

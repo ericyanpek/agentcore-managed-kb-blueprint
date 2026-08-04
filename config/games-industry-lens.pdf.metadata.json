@@ -1,0 +1,53 @@
+{
+  "metadataAttributes": {
+    "document_id": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "aws-games-industry-lens-2026-07-31"
+      },
+      "includeForEmbedding": false
+    },
+    "title": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "AWS Well-Architected Framework Games Industry Lens"
+      },
+      "includeForEmbedding": true
+    },
+    "domain": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "games-industry"
+      },
+      "includeForEmbedding": true
+    },
+    "language": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "zh-CN"
+      },
+      "includeForEmbedding": true
+    },
+    "source_type": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "public-aws-documentation"
+      },
+      "includeForEmbedding": false
+    },
+    "classification": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "PUBLIC"
+      },
+      "includeForEmbedding": false
+    },
+    "version_date": {
+      "value": {
+        "type": "NUMBER",
+        "numberValue": 20260731
+      },
+      "includeForEmbedding": false
+    }
+  }
+}
