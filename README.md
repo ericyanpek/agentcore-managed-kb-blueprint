@@ -1,6 +1,10 @@
-# AgentCore Managed Knowledge Base 蓝图
+# AgentCore Managed Knowledge Base 实测蓝图
 
 **中文（默认）** | [English](README.en.md)
+
+一份面向架构决策的可复现蓝图。它不复述 Managed Knowledge Base 能做什么，而是用
+真机实测标定它的能力边界、失败模式和配额约束，让选型和落地决策有证据可依。所有
+结论区分 AWS 官方能力、AWS 官方建议和本项目实测；负面结果与正面结果同等记录。
 
 本项目使用公开的 AWS Well-Architected 游戏行业视角 PDF，创建并验证一个
 Amazon Bedrock AgentCore Managed Knowledge Base。
@@ -22,6 +26,11 @@ Agentic Retrieval 结果、质量问题和治理建议。
 [Managed Knowledge Base Metadata 对照实验](docs/METADATA_EXPERIMENT.md)
 使用三组字节相同的语料，比较无 Metadata、仅过滤 Metadata 和参与 Embedding
 的语义 Metadata，并说明存储、更新和治理方法。
+
+[企业 Markdown 语料更新 Pipeline](docs/MD_CORPUS_PIPELINE.md)
+面向已有大量 Markdown 文档的企业 MVP：区分 Managed 与 Classic Knowledge Base
+的配额差异、定向摄入与对账同步两条通道的分工、基于 manifest 的变更检测，以及
+多项目场景下多个 KB 与单 KB 多 Data Source 的判定顺序。
 
 [项目级 KB/RAG 数据准备 Skill](.agents/skills/kb-rag-data-preparation/SKILL.md)
 封装从解析、结构恢复、分块和 Metadata 到摄入、评测、发布与回滚的方法论及
@@ -107,6 +116,26 @@ PYTHON_BIN=.venv-agentic/bin/python ./scripts/20_expand_metadata_retrieval.sh
 Metadata Filter 只缩小语义候选集，不保证返回结果；权限 Filter 空集必须
 Fail Closed，确定性文档读取应转到 S3 或内容系统。因此默认策略是保留完整
 Metadata、治理字段不参与 Embedding，并优先使用稳定控制编号进行运行时过滤。
+
+企业 Markdown 语料使用独立的两通道流程。`05_sync_updates.sh` 只能对整个 Data
+Source 做一次全量同步，缺少变更检测、限流、定向摄入和重试；Markdown 流程改为
+先按 manifest 比对得出 added/modified/deleted，再用 `IngestKnowledgeBaseDocuments`
+处理增改、用 `StartIngestionJob` 消化删除。设 `DRY_RUN=1` 可只产出计划：
+
+```bash
+PYTHON_BIN=python3.12 ./scripts/21_prepare_md_corpus.sh
+DRY_RUN=1 PYTHON_BIN=python3.12 ./scripts/22_incremental_ingest.sh
+PYTHON_BIN=python3.12 ./scripts/22_incremental_ingest.sh
+```
+
+两条影响该流程架构的假设当前无证据：`StartIngestionJob` 对 Managed KB 是否
+强制 0.1 rps，以及对账同步是否移除仅存在于索引的定向摄入文档。规划器按悲观
+假设配置。在具备控制面权限的环境中执行下列脚本可产出实测证据，并应指向一个
+可丢弃的 Data Source：
+
+```bash
+PROBE_DATA_SOURCE_ID=<disposable-data-source-id> ./scripts/23_verify_assumptions.sh
+```
 
 修改原始 PDF 后，使用 `./scripts/05_sync_updates.sh` 进行同步。同步修复后的
 文本数据源时，需要显式选择其 Data Source：

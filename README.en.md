@@ -1,6 +1,13 @@
-# AgentCore Managed Knowledge Base end-to-end test
+# AgentCore Managed Knowledge Base measured blueprint
 
 **English** | [中文](README.md)
+
+A reproducible blueprint written for architecture decisions. Instead of restating
+what Managed Knowledge Base can do, it uses live testing to map the capability
+boundaries, failure modes, and quota constraints, so selection and rollout
+decisions rest on evidence. Every conclusion is labeled as an AWS documented
+capability, an AWS recommendation, or a measurement from this project; negative
+results are recorded alongside positive ones.
 
 This workspace provisions and validates an Amazon Bedrock AgentCore Managed
 Knowledge Base using the public AWS Well-Architected Games Industry Lens PDF.
@@ -24,6 +31,12 @@ and latency.
 See [METADATA_EXPERIMENT.md](docs/METADATA_EXPERIMENT.md) for a byte-controlled
 comparison of no metadata, filter-only metadata, and semantic metadata included
 in embeddings, plus the storage, update, and governance model.
+
+See [MD_CORPUS_PIPELINE.md](docs/MD_CORPUS_PIPELINE.md) for the enterprise
+Markdown MVP pipeline: how managed and classic knowledge base quotas differ, how
+the direct ingestion and reconciliation channels divide responsibility, how
+manifest-based change detection works, and how to decide between multiple
+knowledge bases and one knowledge base with many data sources.
 
 See the project-owned
 [KB/RAG Data Preparation Skill](.agents/skills/kb-rag-data-preparation/SKILL.md)
@@ -125,6 +138,31 @@ Authorization filters must fail closed, while deterministic document reads
 should use S3 or the content system. The default is therefore complete
 metadata, governance fields excluded from embeddings, and runtime filtering
 on stable control identifiers.
+
+An enterprise Markdown corpus uses a separate two-channel flow.
+`05_sync_updates.sh` can only run one full sync over an entire data source and
+has no change detection, throttling, targeted ingestion, or retry. The Markdown
+flow instead diffs against a published manifest to derive added, modified, and
+deleted sets, then applies upserts with `IngestKnowledgeBaseDocuments` and
+absorbs deletions with `StartIngestionJob`. Set `DRY_RUN=1` to stop after
+planning:
+
+```bash
+PYTHON_BIN=python3.12 ./scripts/21_prepare_md_corpus.sh
+DRY_RUN=1 PYTHON_BIN=python3.12 ./scripts/22_incremental_ingest.sh
+PYTHON_BIN=python3.12 ./scripts/22_incremental_ingest.sh
+```
+
+Two assumptions that shape this architecture are currently unverified: whether
+`StartIngestionJob` enforces 0.1 rps on managed knowledge bases, and whether a
+reconciliation sync removes directly ingested documents that exist only in the
+index. The planner is configured pessimistically. Running the following script
+in an environment with control plane permissions produces the evidence, and it
+must point at a disposable data source:
+
+```bash
+PROBE_DATA_SOURCE_ID=<disposable-data-source-id> ./scripts/23_verify_assumptions.sh
+```
 
 Use `./scripts/05_sync_updates.sh` after changing the original PDF source. For
 the repaired text source, select its data source explicitly:

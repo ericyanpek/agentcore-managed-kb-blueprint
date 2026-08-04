@@ -29,6 +29,7 @@ def main() -> int:
         ROOT / "docs" / "AWS_KB_RAG_BEST_PRACTICES.md",
         ROOT / "docs" / "SEMANTIC_CHUNKING_EXPERIMENT.md",
         ROOT / "docs" / "METADATA_EXPERIMENT.md",
+        ROOT / "docs" / "MD_CORPUS_PIPELINE.md",
         ROOT / ".agents" / "skills" / "kb-rag-data-preparation" / "SKILL.md",
         ROOT / "SECURITY.md",
         ROOT / "LICENSE",
@@ -81,6 +82,16 @@ def main() -> int:
             english,
             "(docs/METADATA_EXPERIMENT.md)",
             "English metadata experiment report link",
+        ),
+        (
+            chinese,
+            "(docs/MD_CORPUS_PIPELINE.md)",
+            "Chinese Markdown corpus pipeline link",
+        ),
+        (
+            english,
+            "(docs/MD_CORPUS_PIPELINE.md)",
+            "English Markdown corpus pipeline link",
         ),
         (
             chinese,
