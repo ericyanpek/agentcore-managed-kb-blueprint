@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentcore-managed-kb:observability-event:1.0.0",
+  "title": "AgentCore and Managed Knowledge Base observability event",
+  "description": "Redacted normalized event for long-term operational analysis.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_time",
+    "account_id",
+    "region",
+    "environment",
+    "resource_type",
+    "resource_arn",
+    "operation",
+    "outcome",
+    "payload_redacted"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "event_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "region": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "environment": {
+      "type": "string",
+      "enum": [
+        "lab",
+        "development",
+        "staging",
+        "production"
+      ]
+    },
+    "resource_type": {
+      "type": "string",
+      "enum": [
+        "agentcore_runtime",
+        "agentcore_memory",
+        "agentcore_gateway",
+        "agentcore_builtin_tool",
+        "managed_knowledge_base",
+        "application",
+        "observability_pipeline"
+      ]
+    },
+    "resource_arn": {
+      "type": "string",
+      "pattern": "^arn:(aws|aws-cn|aws-us-gov):"
+    },
+    "agent_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "trace_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 128
+    },
+    "span_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 64
+    },
+    "parent_span_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 64
+    },
+    "request_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "runtime_session_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "gateway_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "target_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "tool_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failure",
+        "timeout",
+        "throttled",
+        "denied",
+        "no_result",
+        "unknown"
+      ]
+    },
+    "error_code": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "latency_ms": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "model_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 512
+    },
+    "input_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "output_tokens": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "estimated_cost": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "prompt_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 128
+    },
+    "payload_redacted": {
+      "const": true
+    }
+  }
+}

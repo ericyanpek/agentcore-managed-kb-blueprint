@@ -18,6 +18,14 @@ def level_two_headings(content: str) -> list[str]:
     return re.findall(r"^## .+$", content, flags=re.MULTILINE)
 
 
+def numbered_section_ids(content: str) -> list[str]:
+    return re.findall(r"^## ([0-9]+)\. ", content, flags=re.MULTILINE)
+
+
+def level_three_heading_count(content: str) -> int:
+    return len(re.findall(r"^### .+$", content, flags=re.MULTILINE))
+
+
 def main() -> int:
     chinese = CHINESE_README.read_text(encoding="utf-8")
     english = ENGLISH_README.read_text(encoding="utf-8")
@@ -30,6 +38,14 @@ def main() -> int:
         ROOT / "docs" / "SEMANTIC_CHUNKING_EXPERIMENT.md",
         ROOT / "docs" / "METADATA_EXPERIMENT.md",
         ROOT / "docs" / "MD_CORPUS_PIPELINE.md",
+        ROOT / "docs" / "ENTERPRISE_GOVERNANCE_BLUEPRINT.md",
+        ROOT / "docs" / "CONTROL_BASELINE.md",
+        ROOT / "docs" / "OBSERVABILITY_BLUEPRINT.md",
+        ROOT / "docs" / "AWS_SAMPLE_CATALOG.md",
+        ROOT / "experiments" / "README.md",
+        ROOT / "experiments" / "observability-evidence.template.md",
+        ROOT / "schemas" / "observability-event.schema.json",
+        ROOT / "HANDOFF_REPORT.md",
         ROOT / ".agents" / "skills" / "kb-rag-data-preparation" / "SKILL.md",
         ROOT / "SECURITY.md",
         ROOT / "LICENSE",
@@ -95,6 +111,86 @@ def main() -> int:
         ),
         (
             chinese,
+            "(docs/ENTERPRISE_GOVERNANCE_BLUEPRINT.md)",
+            "Chinese enterprise governance blueprint link",
+        ),
+        (
+            english,
+            "(docs/ENTERPRISE_GOVERNANCE_BLUEPRINT.md)",
+            "English enterprise governance blueprint link",
+        ),
+        (
+            chinese,
+            "(docs/CONTROL_BASELINE.md)",
+            "Chinese control baseline link",
+        ),
+        (
+            english,
+            "(docs/CONTROL_BASELINE.md)",
+            "English control baseline link",
+        ),
+        (
+            chinese,
+            "(docs/OBSERVABILITY_BLUEPRINT.md)",
+            "Chinese observability blueprint link",
+        ),
+        (
+            english,
+            "(docs/OBSERVABILITY_BLUEPRINT.md)",
+            "English observability blueprint link",
+        ),
+        (
+            chinese,
+            "(experiments/observability-evidence.template.md)",
+            "Chinese observability evidence template link",
+        ),
+        (
+            english,
+            "(experiments/observability-evidence.template.md)",
+            "English observability evidence template link",
+        ),
+        (
+            chinese,
+            "(schemas/observability-event.schema.json)",
+            "Chinese observability event schema link",
+        ),
+        (
+            english,
+            "(schemas/observability-event.schema.json)",
+            "English observability event schema link",
+        ),
+        (
+            chinese,
+            "(experiments/README.md)",
+            "Chinese enterprise experiment route link",
+        ),
+        (
+            english,
+            "(experiments/README.md)",
+            "English enterprise experiment route link",
+        ),
+        (
+            chinese,
+            "(docs/AWS_SAMPLE_CATALOG.md)",
+            "Chinese AWS sample catalog link",
+        ),
+        (
+            english,
+            "(docs/AWS_SAMPLE_CATALOG.md)",
+            "English AWS sample catalog link",
+        ),
+        (
+            chinese,
+            "(HANDOFF_REPORT.md)",
+            "Chinese handoff report link",
+        ),
+        (
+            english,
+            "(HANDOFF_REPORT.md)",
+            "English handoff report link",
+        ),
+        (
+            chinese,
             "(.agents/skills/kb-rag-data-preparation/SKILL.md)",
             "Chinese project skill link",
         ),
@@ -116,6 +212,28 @@ def main() -> int:
         failures.append(
             "README section counts differ: "
             f"Chinese={len(chinese_headings)}, English={len(english_headings)}"
+        )
+
+    chinese_section_ids = numbered_section_ids(chinese)
+    english_section_ids = numbered_section_ids(english)
+    expected_section_ids = [str(index) for index in range(1, 10)]
+    if chinese_section_ids != expected_section_ids:
+        failures.append(
+            "Chinese README section order differs from 1-9: "
+            f"{chinese_section_ids}"
+        )
+    if english_section_ids != expected_section_ids:
+        failures.append(
+            "English README section order differs from 1-9: "
+            f"{english_section_ids}"
+        )
+
+    chinese_level_three = level_three_heading_count(chinese)
+    english_level_three = level_three_heading_count(english)
+    if chinese_level_three != english_level_three:
+        failures.append(
+            "README subsection counts differ: "
+            f"Chinese={chinese_level_three}, English={english_level_three}"
         )
 
     chinese_blocks = fenced_blocks(chinese)

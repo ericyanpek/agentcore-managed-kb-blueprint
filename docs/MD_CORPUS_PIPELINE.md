@@ -15,8 +15,66 @@
 
 本文的 Pipeline 实现见 `scripts/21_prepare_md_corpus.sh`、
 `scripts/22_incremental_ingest.sh` 和 `scripts/23_verify_assumptions.sh`。
-截至 2026-08-04，脚本已在本地语料上验证准备、变更检测、批次规划与门禁逻辑，
-但**尚未在 Managed Knowledge Base 上执行端到端摄入**。
+截至 2026-08-04，脚本只在本地语料上验证了准备、变更检测和批次规划，
+**尚未在 Managed Knowledge Base 上执行端到端摄入，删除保护、异步文档终态、
+Metadata 关联和 Manifest Promotion 也尚未达到生产门禁要求**。
+
+### 1.1 先用用户问题理解 Pipeline
+
+| 用户问题 | 准确答案 |
+| --- | --- |
+| KB 的事实依据就是 S3 最新文件吗？ | S3 是 Connector 可见的发布副本；KB 检索的是最后一次成功摄入的索引快照。只更新 S3 不会自动更新检索结果。 |
+| 首次有 50 个 Markdown 怎么摄入？ | 本地检查 50 个文件；初始 Manifest 将它们全部标记为 `added`；按每批 10 个拆成 5 次 Direct Ingestion。 |
+| 一周后只修改 5 个 Markdown 呢？ | 本地仍扫描全部 50 个来确认增改删，但只上传并定向摄入 5 个 `modified` 文件；其余 45 个不重新摄入。 |
+| 50 页 PDF 只改几页呢？ | 单个 PDF 是一个摄入文档，整份 PDF 重新解析、分块和 Embedding；不会重建 KB 中其他文档。若 KB 只有这一份 PDF，效果上等于全 Corpus 更新。 |
+
+企业 Pipeline 至少需要区分四层状态：
+
+```text
+Git / CMS                     企业内容权威源
+  -> S3 Source / Canonical    Connector 读取的候选发布副本
+  -> Published Manifest       已批准的 Release 契约
+  -> Managed KB Index         最后一次成功摄入的派生索引
+```
+
+目标一致性条件是：
+
+```text
+S3 desired version == published manifest version == KB indexed version
+```
+
+在异步摄入期间三者可以短暂不一致，因此 `S3 latest` 不能单独证明新内容已经可检索。
+每次发布必须记录文档终态和检索证据。
+
+### 1.2 50 个 Markdown 的两次发布
+
+首次发布：
+
+```text
+扫描并检查 50 个文件
+  -> previous manifest 不存在
+  -> added=50, modified=0, deleted=0
+  -> 上传 50 个 Markdown + 50 个 Sidecar
+  -> 5 个 Direct Ingestion batch（每批 10 个）
+  -> 文档终态 + Golden Set + ACL 门禁
+  -> Promotion Release v1
+```
+
+一周后只修改其中 5 个：
+
+```text
+重新扫描并检查全部 50 个文件
+  -> 与 Release v1 Manifest 比较 content/metadata SHA-256
+  -> added=0, modified=5, deleted=0, unchanged=45
+  -> 只上传 5 个 Markdown + 5 个 Sidecar
+  -> 1 个 Direct Ingestion batch
+  -> 受影响查询 + 全局 Smoke + ACL 门禁
+  -> Promotion Release v2
+```
+
+这里的“增量”是**云端写入和摄入增量**，不是跳过本地 Corpus 检查。本地重新扫描
+全部 50 个文件，才能可靠发现删除、重复 `document_id`、Metadata-only 更新和
+Corpus 级约束变化。
 
 ## 2. Markdown 语料是比 PDF 更好的起点
 
@@ -53,7 +111,7 @@ Unicode replacement character 归零。详见
 `Wait 300s` 后重试，DLQ 设 `maxReceiveCount: 5`。
 
 **该方案的串行化设计建立在 Classic Knowledge Base 的配额上。** Managed
-Knowledge Base 于 2026-07-15 GA，配额显著不同：
+Knowledge Base 于 2026 年 6 月 GA，配额显著不同：
 
 | 配额项 | Classic KB | Managed KB |
 | --- | ---: | ---: |
@@ -85,15 +143,15 @@ Knowledge Base 于 2026-07-15 GA，配额显著不同：
 ## 4. 两条摄入通道及其分工
 
 企业 Markdown 语料的更新不应只有 `StartIngestionJob` 一条路径。Managed KB
-提供两个语义不同的摄入 API：
+提供定向变更与全量对账两类通道：
 
 | 维度 | 定向通道 | 对账通道 |
 | --- | --- | --- |
-| API | `IngestKnowledgeBaseDocuments` | `StartIngestionJob` |
-| 粒度 | 单文档（每请求 ≤ 10） | 整个 Data Source |
+| API | `IngestKnowledgeBaseDocuments` / `DeleteKnowledgeBaseDocuments` | `StartIngestionJob` |
+| 粒度 | 已知文档集合 | 整个 Data Source |
 | 速率 | 20 rps | 未单列（假设 A1） |
-| 能否删除 | 否 | **是，且仅此通道能删** |
-| 适用 | 已知哪些文件变更 | 消化删除、修正漂移 |
+| 能否删除 | **是，使用 Delete API** | 是 |
+| 适用 | 已知哪些文件增改删 | 周期性对账、修正漂移 |
 
 官方 [Direct ingestion 文档](https://docs.aws.amazon.com/bedrock/latest/userguide/kb-direct-ingestion-add.html)
 给出两条硬约束，决定了通道分工不是优化而是正确性要求：
@@ -111,19 +169,23 @@ Git / CMS（事实源）
   -> 门禁：编码、空文档、大小、document_id 唯一性
   -> 变更检测：与已发布 manifest 比对 SHA-256，得出 added/modified/deleted
   -> 上传变更对象与 .metadata.json sidecar 到 S3
-  -> 定向摄入 added + modified（IngestKnowledgeBaseDocuments，批 10）
-  -> 若存在 deleted：删除 S3 对象后运行对账 Sync（StartIngestionJob）
+  -> 定向摄入 added + modified（IngestKnowledgeBaseDocuments）
+  -> 定向删除 deleted（DeleteKnowledgeBaseDocuments）
+  -> 周期性对账 Sync（StartIngestionJob）
   -> 检索回归与 ACL 回归
   -> 提升 manifest 为已发布基线
 ```
 
 `scripts/22_incremental_ingest.py` 输出该计划，`scripts/22_incremental_ingest.sh`
-执行；设 `DRY_RUN=1` 可在不调用任何变更 API 的前提下产出计划。
+执行；设 `DRY_RUN=1` 可在不调用任何变更 API 的前提下产出计划。**当前脚本尚未
+实现上述目标状态**：它仍用 Sync 处理删除，不轮询 Direct API 文档终态，也没有
+在 Direct Ingestion Payload 中显式关联 Metadata Sidecar。
 
-删除保护是这条链上容易被误解的一环。本仓库 Data Source 配置为单次同步删除
-超过 50% 已索引文档时阻止删除。规划器会在删除比例越过阈值时输出告警，因为
-此时**连接器会跳过删除阶段，索引将保留已删除文档**——这既是数据保护，也是
-一种静默的陈旧风险。删除保护不是备份，仍需 S3 Versioning 与恢复演练。
+删除保护是这条链上容易被误解的一环。目标设计是在删除比例超过 50% 时 Fail
+Closed，并要求人工审批。当前规划器的分母使用删除后的文档数，全量删除时可能
+错误计算为 0；执行脚本也不会根据 Guardrail 停止删除。因此当前实现的删除保护
+只是提示，不是控制。修复并完成负向测试前，不得用于生产删除。删除保护也不是
+备份，仍需 S3 Versioning 与恢复演练。
 
 ## 5. 变更检测靠 manifest 比对，不靠 S3 事件
 
@@ -141,6 +203,80 @@ added/modified/deleted 三态。
 
 事实源是 Git 或 CMS，Sidecar 是治理字段的权威副本，向量索引是派生数据。
 任何只改索引不改事实源的操作都会在下次对账时被回滚，这是设计意图。
+
+### 5.1 Source Diff、Release Diff 与 Retrieval Diff
+
+企业知识库至少要管理三种不同的 Diff：
+
+| Diff | 回答的问题 | 实现 |
+| --- | --- | --- |
+| Source Diff | 作者修改了什么？ | Markdown 使用 Git Diff；PDF 使用对象 SHA-256/S3 Version ID |
+| Release Diff | 哪些文档应新增、修改或删除？ | 比较前后 Manifest 的内容与 Metadata SHA-256 |
+| Retrieval Diff | 新版本改变了哪些召回结果？ | 固定 Golden Set，比较 Hit Rate、Recall、MRR/nDCG、Citation 和 Latency |
+
+Managed KB 不暴露客户可直接比较的底层向量索引，因此 Source/Manifest Diff
+不能替代 Retrieval Diff。向量、分块和排序的行为变化必须通过检索回归观察。
+
+### 5.2 Release Manifest 的生产字段
+
+当前脚本生成的 Manifest 已包含 `documentId`、路径、内容/Metadata SHA-256 和
+Corpus SHA-256。生产版本还应增加：
+
+```json
+{
+  "releaseId": "knowledge-domain-2026-08-10.1",
+  "parentReleaseId": "knowledge-domain-2026-08-03.1",
+  "sourceCommit": "<git-commit>",
+  "pipelineVersion": "data-preparation-v2",
+  "querySetVersion": "golden-set-v3",
+  "documents": [
+    {
+      "documentId": "fraud-detection",
+      "s3Key": "canonical/fraud-detection.md",
+      "s3VersionId": "<version-id>",
+      "contentSha256": "<sha256>",
+      "metadataSha256": "<sha256>"
+    }
+  ],
+  "status": "CANDIDATE"
+}
+```
+
+建议状态机：
+
+```text
+DRAFT -> PREPARED -> INGESTING -> INGESTED
+      -> QUALITY_PASSED -> PUBLISHED
+```
+
+`PUBLISHED` Pointer 可存入版本化 S3；存在并发发布时，使用 DynamoDB Conditional
+Write 或等价的 Compare-and-Swap 防止两个 Pipeline 相互覆盖。当前脚本把
+Published Manifest 放在被 Git 忽略的 `artifacts/<RUN_ID>/published/`，不能跨
+临时 CI Runner 稳定保存，也不是原子发布存储。
+
+### 5.3 S3 Versioning、PDF Diff 与回滚
+
+S3 Bucket 应启用 Versioning；高风险语料再评估 Object Lock。更新同一个 Key
+会生成新的 Version ID，但 Connector 通常消费该 Key 的当前版本。回滚旧内容时：
+
+1. 找到 Manifest 记录的旧 S3 Version ID。
+2. 将旧版本复制为同一 Key 的新 Current Version，或切回旧 Release Prefix。
+3. 重新摄入并等待文档终态。
+4. 执行 Smoke、stale-content 和 ACL 回归。
+5. 将 Current Release Pointer 切回旧 Manifest。
+
+PDF 的二进制 Diff 只能说明整个文件发生变化，不能说明业务语义改了哪里。需要
+可读 Diff 和细粒度更新时，应同时保留不可变原始 PDF，并预抽取为稳定章节：
+
+```text
+original/manual.pdf
+canonical/manual/anti-cheat.md
+canonical/manual/fraud-detection.md
+canonical/manual/player-analytics.md
+```
+
+优先按章节、控制项或业务主题拆分，不建议直接按页拆分。插页和跨页段落会让页码
+整体漂移，导致大量无业务意义的变更。
 
 ## 6. Metadata 策略直接沿用本仓库实测结论
 
@@ -169,14 +305,17 @@ added/modified/deleted 三态。
 
 ## 7. 待验证假设
 
-以下两条影响架构选择，当前无证据。`scripts/23_verify_assumptions.sh` 可在
-具备控制面权限的环境直接执行并产出 JSON 证据。
+以下两条影响架构选择，当前无证据。现有 `scripts/23_verify_assumptions.sh`
+保留为实验草稿，但其 A1 混淆同 Data Source 并发限制与 API Rate，A2 使用
+`CUSTOM` Payload 测试 S3 Data Source，并把 Managed KB 查询错误配置为
+`vectorSearchConfiguration`。重写前不能用其结果支持架构决策。
 
 ### A1 `StartIngestionJob` 对 Managed KB 是否强制 0.1 rps
 
 通用配额页列出 Classic 的 0.1 rps 且不可调，未发布 Managed 等价项，同时把
-并发 Job/KB 从 1 提到 50。方法：连续提交多个 Job，记录哪些调用抛
-`ThrottlingException`。
+并发 Job/KB 从 1 提到 50。正确方法是使用多个 Disposable Data Source 控制
+Job-in-progress 变量，再记录提交间隔与 `ThrottlingException`；不能只对同一个
+Data Source 连续提交 Job。
 
 - 若**全部被接受**且间隔远低于 10 秒，则 A1 被推翻，参考架构中的串行门闩在
   Managed KB 上不必要，规划器可以去掉限流间隔。
@@ -186,9 +325,10 @@ added/modified/deleted 三态。
 
 ### A2 对账 Sync 是否移除仅存在于索引的定向摄入文档
 
-官方警告的表述覆盖的是「文档同时存在于 S3」的情形，未明确说明「文档只在索引、
-不在 S3 前缀」时的行为。方法：定向摄入一份探针文档，确认可检索，运行整
-Data Source 的 `StartIngestionJob`，再次检索。
+官方警告的表述覆盖的是「文档同时存在于 S3」的情形，未明确说明「文档在桶中但
+不在 Connector Inclusion Prefix」时的行为。正确方法是在同一个 S3 Bucket
+创建位于 Inclusion Prefix 外的探针对象，使用 S3 URI 定向摄入并轮询最终状态；
+确认可检索后运行 Data Source Sync，再用 `managedSearchConfiguration` 检索。
 
 - 若同步后检索不到，A2 成立，「先写 S3 再定向摄入」是强制要求，且对账不能在
   前缀尚未写全时运行。
@@ -266,6 +406,20 @@ RAGOps 门禁，对 Markdown 语料具体化为：
 7. ACL 回归：目标泄漏率为 0。
 8. 人工抽样核对引用。
 9. 提升 manifest 为已发布基线。失败则不提升，下次运行自动重算同批变更。
+
+不同变更的回归范围不应完全相同：
+
+| 变更 | 每次发布必须执行 |
+| --- | --- |
+| 修改 5 个 Markdown | 全量确定性准备检查；受影响 Golden Queries；全局关键 Smoke；ACL/No-answer |
+| 只修改 Metadata/ACL | Filter 正负测试、跨租户泄漏、Metadata 类型与缺失字段测试 |
+| 删除文档 | stale-content 排除、引用失效、删除与权限回归 |
+| 更新一个完整 PDF | 该 PDF 全部相关 Golden Queries；全局 Smoke；解析和 Citation 抽样 |
+| Parser/Chunking/Embedding/Schema 变化 | 完整 Golden Set、Latency/Cost、蓝绿 Data Source 和回滚演练 |
+
+当前 `scripts/22_incremental_ingest.sh` 尚未自动运行上述业务回归，也只记录 Direct
+API `ACCEPTED`，随后即复制 Published Manifest。生产实现必须把文档最终状态、
+Ingestion failed/skipped、检索质量和 ACL 门禁放在 Manifest Promotion 之前。
 
 运营节奏与陈旧检测：`lifecycle_status` 与 `expires_on` 作为可过滤字段写入
 Sidecar，使「过期文档」成为一次 Metadata Filter 查询而非全量扫描。`Retrieve`
