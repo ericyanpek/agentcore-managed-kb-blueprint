@@ -3520,3 +3520,874 @@ discard the index."
 ```
 
 README 中英文对该脚本的引用在 Task 15 统一更新。
+
+---
+
+## Task 11: ReleaseStack —— DynamoDB 与三个 Lambda
+
+**Files:**
+- Create: `infra/lib/release-stack.ts`
+- Create: `infra/test/release-stack.test.ts`
+- Modify: `infra/bin/app.ts`
+
+本任务只建资源与权限，状态机在 Task 12 接线。Lambda 代码打包自仓库根的 `kbp/` 目录。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `infra/test/release-stack.test.ts`：
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import { Template, Match } from 'aws-cdk-lib/assertions';
+import { FoundationStack } from '../lib/foundation-stack';
+import { ReleaseStack } from '../lib/release-stack';
+
+const env = { account: '123456789012', region: 'us-east-1' };
+
+function synth(): Template {
+  const app = new cdk.App();
+  const foundation = new FoundationStack(app, 'TestFoundation', { env, corpusId: 'demo' });
+  const stack = new ReleaseStack(app, 'TestRelease', {
+    env,
+    corpusId: 'demo',
+    canonicalBucket: foundation.canonicalBucket,
+    registryBucket: foundation.registryBucket,
+    encryptionKey: foundation.encryptionKey,
+    stateMachineLogGroup: foundation.stateMachineLogGroup,
+    knowledgeBaseId: 'KB123456',
+    dataSourceId: 'DS123456',
+    knowledgeBaseArn: `arn:aws:bedrock:us-east-1:123456789012:knowledge-base/KB123456`,
+    canonicalPrefix: 'canonical/demo',
+    deletionRatioThreshold: 0.5,
+  });
+  return Template.fromStack(stack);
+}
+
+describe('ReleaseStack', () => {
+  test('release table is encrypted with the CMK and has PITR enabled', () => {
+    synth().hasResourceProperties('AWS::DynamoDB::Table', {
+      SSESpecification: { SSEEnabled: true, SSEType: 'KMS' },
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+    });
+  });
+
+  test('release table uses a composite key that allows multiple corpora later', () => {
+    synth().hasResourceProperties('AWS::DynamoDB::Table', {
+      KeySchema: [
+        { AttributeName: 'pk', KeyType: 'HASH' },
+        { AttributeName: 'sk', KeyType: 'RANGE' },
+      ],
+    });
+  });
+
+  test('release table is retained on stack deletion', () => {
+    const tables = synth().findResources('AWS::DynamoDB::Table');
+    for (const logicalId of Object.keys(tables)) {
+      expect(tables[logicalId].DeletionPolicy).toBe('Retain');
+    }
+  });
+
+  test('creates exactly three lambda functions', () => {
+    synth().resourceCountIs('AWS::Lambda::Function', 3);
+  });
+
+  test('gate evaluation lambda has no aws permissions because it is pure', () => {
+    const template = synth();
+    const policies = template.findResources('AWS::IAM::Policy');
+    const rendered = JSON.stringify(Object.values(policies));
+    // The pure gate function needs no S3, DynamoDB or Bedrock access.
+    expect(rendered).not.toContain('CheckGatesFunctionServiceRoleDefaultPolicy');
+  });
+
+  test('verify-s3 lambda is granted read but not write on the canonical bucket', () => {
+    const template = synth();
+    const policies = template.findResources('AWS::IAM::Policy');
+    const rendered = JSON.stringify(Object.values(policies));
+    expect(rendered).toContain('s3:GetObject');
+    expect(rendered).not.toContain('s3:DeleteObject');
+  });
+
+  test('registry lambda can write the release table', () => {
+    const template = synth();
+    const policies = template.findResources('AWS::IAM::Policy');
+    const rendered = JSON.stringify(Object.values(policies));
+    expect(rendered).toContain('dynamodb:UpdateItem');
+    expect(rendered).toContain('dynamodb:PutItem');
+  });
+
+  test('publisher role can start executions but cannot call bedrock directly', () => {
+    const template = synth();
+    const policies = template.findResources('AWS::IAM::Policy');
+    const rendered = JSON.stringify(Object.values(policies));
+    expect(rendered).toContain('states:StartExecution');
+    const publisherPolicies = Object.values(policies).filter((policy) =>
+      JSON.stringify(policy).includes('states:StartExecution'),
+    );
+    expect(JSON.stringify(publisherPolicies)).not.toContain('bedrock:Retrieve');
+  });
+
+  test('deletion ratio threshold is surfaced to the state machine', () => {
+    const app = new cdk.App();
+    const foundation = new FoundationStack(app, 'TestFoundation', { env, corpusId: 'demo' });
+    const stack = new ReleaseStack(app, 'TestRelease', {
+      env,
+      corpusId: 'demo',
+      canonicalBucket: foundation.canonicalBucket,
+      registryBucket: foundation.registryBucket,
+      encryptionKey: foundation.encryptionKey,
+      stateMachineLogGroup: foundation.stateMachineLogGroup,
+      knowledgeBaseId: 'KB123456',
+      dataSourceId: 'DS123456',
+      knowledgeBaseArn: 'arn:aws:bedrock:us-east-1:123456789012:knowledge-base/KB123456',
+      canonicalPrefix: 'canonical/demo',
+      deletionRatioThreshold: 0.25,
+    });
+    expect(stack.deletionRatioThreshold).toBe(0.25);
+  });
+});
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `cd infra && npx jest test/release-stack.test.ts`
+
+Expected: FAIL —— `Cannot find module '../lib/release-stack'`。
+
+- [ ] **Step 3: 实现 ReleaseStack**
+
+创建 `infra/lib/release-stack.ts`：
+
+```typescript
+import * as path from 'path';
+import * as cdk from 'aws-cdk-lib';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import { Construct } from 'constructs';
+
+export interface ReleaseStackProps extends cdk.StackProps {
+  readonly corpusId: string;
+  readonly canonicalBucket: s3.IBucket;
+  readonly registryBucket: s3.IBucket;
+  readonly encryptionKey: kms.IKey;
+  readonly stateMachineLogGroup: logs.ILogGroup;
+  readonly knowledgeBaseId: string;
+  readonly dataSourceId: string;
+  readonly knowledgeBaseArn: string;
+  readonly canonicalPrefix: string;
+  readonly deletionRatioThreshold: number;
+}
+
+const KBP_ROOT = path.join(__dirname, '..', '..');
+
+/**
+ * Stateless release orchestration. Safe to destroy and redeploy because it owns
+ * no indexed content; the release table is nonetheless retained so audit history
+ * survives an accidental teardown.
+ */
+export class ReleaseStack extends cdk.Stack {
+  public readonly releaseTable: dynamodb.Table;
+  public readonly verifyS3Function: lambda.Function;
+  public readonly checkGatesFunction: lambda.Function;
+  public readonly registryFunction: lambda.Function;
+  public readonly publisherRole: iam.Role;
+  public readonly deletionRatioThreshold: number;
+
+  constructor(scope: Construct, id: string, props: ReleaseStackProps) {
+    super(scope, id, props);
+
+    this.deletionRatioThreshold = props.deletionRatioThreshold;
+
+    this.releaseTable = new dynamodb.Table(this, 'ReleaseTable', {
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.encryptionKey,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const code = lambda.Code.fromAsset(KBP_ROOT, {
+      exclude: [
+        'infra',
+        'artifacts',
+        'tmp',
+        'docs',
+        'experiments',
+        'scripts',
+        'tests',
+        '.git',
+        '.venv*',
+        '**/__pycache__',
+      ],
+    });
+
+    const commonProps = {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      code,
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      logRetention: logs.RetentionDays.THREE_MONTHS,
+    };
+
+    this.verifyS3Function = new lambda.Function(this, 'VerifyS3Function', {
+      ...commonProps,
+      handler: 'kbp.ingestion.handlers.verify_s3.handler',
+      description: 'Gate A: canonical objects match the manifest',
+      environment: { CANONICAL_BUCKET: props.canonicalBucket.bucketName },
+    });
+    props.canonicalBucket.grantRead(this.verifyS3Function);
+    props.encryptionKey.grantDecrypt(this.verifyS3Function);
+
+    // Pure decision logic: deliberately granted no AWS permissions at all.
+    this.checkGatesFunction = new lambda.Function(this, 'CheckGatesFunction', {
+      ...commonProps,
+      handler: 'kbp.ingestion.handlers.check_gates.handler',
+      description: 'Gates B, C and D: pure decision logic',
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+    });
+
+    this.registryFunction = new lambda.Function(this, 'RegistryFunction', {
+      ...commonProps,
+      handler: 'kbp.ingestion.handlers.registry_ops.handler',
+      description: 'Release registry state transitions and atomic promotion',
+      environment: { RELEASE_TABLE: this.releaseTable.tableName },
+    });
+    this.releaseTable.grantReadWriteData(this.registryFunction);
+    props.encryptionKey.grantEncryptDecrypt(this.registryFunction);
+
+    // The publisher only starts executions; it has no direct path to the
+    // knowledge base, so all ingestion flows through the gated state machine.
+    this.publisherRole = new iam.Role(this, 'PublisherRole', {
+      assumedBy: new iam.AccountPrincipal(this.account),
+      description: `Starts release executions for corpus ${props.corpusId}`,
+    });
+    props.canonicalBucket.grantReadWrite(this.publisherRole);
+    props.registryBucket.grantReadWrite(this.publisherRole);
+    props.encryptionKey.grantEncryptDecrypt(this.publisherRole);
+
+    new cdk.CfnOutput(this, 'ReleaseTableName', {
+      value: this.releaseTable.tableName,
+      exportName: `${this.stackName}-ReleaseTableName`,
+    });
+    new cdk.CfnOutput(this, 'PublisherRoleArn', {
+      value: this.publisherRole.roleArn,
+      exportName: `${this.stackName}-PublisherRoleArn`,
+    });
+  }
+}
+```
+
+修改 `infra/bin/app.ts`，在 `knowledgeBase` 之后插入：
+
+```typescript
+const release = new ReleaseStack(app, 'ManagedKbRelease', {
+  env,
+  corpusId,
+  canonicalBucket: foundation.canonicalBucket,
+  registryBucket: foundation.registryBucket,
+  encryptionKey: foundation.encryptionKey,
+  stateMachineLogGroup: foundation.stateMachineLogGroup,
+  knowledgeBaseId: knowledgeBase.knowledgeBaseId,
+  dataSourceId: knowledgeBase.dataSourceId,
+  knowledgeBaseArn: knowledgeBase.knowledgeBaseArn,
+  canonicalPrefix: `canonical/${corpusId}`,
+  deletionRatioThreshold: 0.5,
+  description: 'Release orchestration, registry and gates',
+});
+release.addDependency(knowledgeBase);
+
+void release;
+```
+
+并加入 import：
+
+```typescript
+import { ReleaseStack } from '../lib/release-stack';
+```
+
+删除 `void knowledgeBase;` 一行。
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `cd infra && npx jest test/release-stack.test.ts`
+
+Expected: 9 passed。
+
+- [ ] **Step 5: 提交**
+
+```bash
+cd .. && git add infra
+git commit -m "Add CDK release stack with registry table and gate functions
+
+Grant the gate evaluation function no AWS permissions at all, since it only
+transforms data, and give the publisher role no direct path to the knowledge
+base so every ingestion must pass through the gated state machine."
+```
+
+---
+
+## Task 12: 状态机接线（九步拓扑）
+
+**Files:**
+- Create: `infra/lib/state-machine.ts`
+- Create: `infra/test/state-machine.test.ts`
+- Modify: `infra/lib/release-stack.ts`
+
+拓扑已通过 `ValidateStateMachineDefinition` 校验，包括轮询计数器与全部 Catch 分支。本任务
+的验收核心是：**每一道门禁到 `FailRelease` 都存在一条边，且没有任何门禁能绕过而到达
+`PromoteRelease`**。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `infra/test/state-machine.test.ts`：
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import { Template } from 'aws-cdk-lib/assertions';
+import { FoundationStack } from '../lib/foundation-stack';
+import { ReleaseStack } from '../lib/release-stack';
+
+const env = { account: '123456789012', region: 'us-east-1' };
+
+function definition(): Record<string, any> {
+  const app = new cdk.App();
+  const foundation = new FoundationStack(app, 'TestFoundation', { env, corpusId: 'demo' });
+  const stack = new ReleaseStack(app, 'TestRelease', {
+    env,
+    corpusId: 'demo',
+    canonicalBucket: foundation.canonicalBucket,
+    registryBucket: foundation.registryBucket,
+    encryptionKey: foundation.encryptionKey,
+    stateMachineLogGroup: foundation.stateMachineLogGroup,
+    knowledgeBaseId: 'KB123456',
+    dataSourceId: 'DS123456',
+    knowledgeBaseArn: 'arn:aws:bedrock:us-east-1:123456789012:knowledge-base/KB123456',
+    canonicalPrefix: 'canonical/demo',
+    deletionRatioThreshold: 0.5,
+  });
+  const template = Template.fromStack(stack);
+  const machines = template.findResources('AWS::StepFunctions::StateMachine');
+  const raw = Object.values(machines)[0].Properties.DefinitionString;
+  // The definition is a Fn::Join of literals and token references; concatenate
+  // the literal parts so state names and transitions can be asserted.
+  const joined = raw['Fn::Join'][1]
+    .map((part: unknown) => (typeof part === 'string' ? part : '"TOKEN"'))
+    .join('');
+  return JSON.parse(joined);
+}
+
+describe('release state machine topology', () => {
+  test('is a STANDARD state machine with logging enabled', () => {
+    const app = new cdk.App();
+    const foundation = new FoundationStack(app, 'TestFoundation', { env, corpusId: 'demo' });
+    const stack = new ReleaseStack(app, 'TestRelease', {
+      env,
+      corpusId: 'demo',
+      canonicalBucket: foundation.canonicalBucket,
+      registryBucket: foundation.registryBucket,
+      encryptionKey: foundation.encryptionKey,
+      stateMachineLogGroup: foundation.stateMachineLogGroup,
+      knowledgeBaseId: 'KB123456',
+      dataSourceId: 'DS123456',
+      knowledgeBaseArn: 'arn:aws:bedrock:us-east-1:123456789012:knowledge-base/KB123456',
+      canonicalPrefix: 'canonical/demo',
+      deletionRatioThreshold: 0.5,
+    });
+    Template.fromStack(stack).hasResourceProperties(
+      'AWS::StepFunctions::StateMachine',
+      { StateMachineType: 'STANDARD' },
+    );
+  });
+
+  test('every gate has a transition to FailRelease', () => {
+    const states = definition().States;
+    for (const gateChoice of [
+      'GateAChoice',
+      'GateBChoice',
+      'GateCChoice',
+      'GateDChoice',
+    ]) {
+      const rendered = JSON.stringify(states[gateChoice]);
+      expect(rendered).toContain('FailRelease');
+    }
+  });
+
+  test('no gate choice can reach PromoteRelease directly', () => {
+    const states = definition().States;
+    for (const gateChoice of ['GateAChoice', 'GateBChoice', 'GateCChoice']) {
+      expect(JSON.stringify(states[gateChoice])).not.toContain('PromoteRelease');
+    }
+  });
+
+  test('PromoteRelease is reachable only from the last gate', () => {
+    const states = definition().States;
+    const predecessors = Object.entries(states)
+      .filter(([name, state]) =>
+        name !== 'GateDChoice' && JSON.stringify(state).includes('"PromoteRelease"'),
+      )
+      .map(([name]) => name);
+    expect(predecessors).toEqual([]);
+  });
+
+  test('an empty change set succeeds without creating a release record', () => {
+    const states = definition().States;
+    expect(states.IsChangeSetEmpty.Default).toBe('CreateReleaseRecord');
+    const emptyBranch = states.IsChangeSetEmpty.Choices[0].Next;
+    expect(states[emptyBranch].Type).toBe('Succeed');
+  });
+
+  test('ingest and delete batches run with concurrency one', () => {
+    const states = definition().States;
+    expect(states.IngestBatches.MaxConcurrency).toBe(1);
+    expect(states.DeleteBatches.MaxConcurrency).toBe(1);
+  });
+
+  test('throttling is retried with exponential backoff', () => {
+    const states = definition().States;
+    const retry = states.IngestBatches.Iterator.States.IngestBatch.Retry[0];
+    expect(retry.BackoffRate).toBe(2);
+    expect(retry.MaxAttempts).toBeGreaterThanOrEqual(6);
+  });
+
+  test('polling has a bounded attempt count so it cannot spin forever', () => {
+    const states = definition().States;
+    const timeoutChoice = states.GateCChoice.Choices.find((choice: any) =>
+      JSON.stringify(choice).includes('NumericGreaterThanEquals'),
+    );
+    expect(timeoutChoice.Next).toBe('FailRelease');
+  });
+
+  test('the failure path terminates in a Fail state', () => {
+    const states = definition().States;
+    expect(states.FailRelease.Next).toBe('ReleaseFailed');
+    expect(states.ReleaseFailed.Type).toBe('Fail');
+  });
+
+  test('uses managed search configuration for the smoke retrieval', () => {
+    const rendered = JSON.stringify(definition().States.SmokeRetrieve);
+    expect(rendered).toContain('ManagedSearchConfiguration');
+    expect(rendered).not.toContain('VectorSearchConfiguration');
+  });
+});
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `cd infra && npx jest test/state-machine.test.ts`
+
+Expected: FAIL —— 找不到 `AWS::StepFunctions::StateMachine` 资源（ReleaseStack 尚未创建
+状态机）。
+
+- [ ] **Step 3: 实现状态机**
+
+创建 `infra/lib/state-machine.ts`。使用 `sfn.DefinitionBody.fromChainable` 构建，逐个门禁
+显式连接失败分支。
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
+import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
+import { Construct } from 'constructs';
+
+export interface ReleaseStateMachineProps {
+  readonly verifyS3Function: lambda.IFunction;
+  readonly checkGatesFunction: lambda.IFunction;
+  readonly registryFunction: lambda.IFunction;
+  readonly logGroup: logs.ILogGroup;
+  readonly knowledgeBaseArn: string;
+  readonly deletionRatioThreshold: number;
+  readonly maxPollAttempts: number;
+}
+
+const THROTTLE_RETRY: sfn.RetryProps = {
+  errors: ['Bedrock.ThrottlingException', 'States.TaskFailed'],
+  interval: cdk.Duration.seconds(2),
+  backoffRate: 2,
+  maxAttempts: 6,
+};
+
+/**
+ * The fail-closed release pipeline.
+ *
+ * Fail-closed is enforced by topology rather than by code discipline: each gate
+ * is a Choice state whose non-passing branch leads to FailRelease, and no gate
+ * has an edge that skips a later gate to reach PromoteRelease.
+ */
+export function buildReleaseStateMachine(
+  scope: Construct,
+  id: string,
+  props: ReleaseStateMachineProps,
+): sfn.StateMachine {
+  const registryCall = (name: string, payload: Record<string, unknown>) =>
+    new tasks.LambdaInvoke(scope, name, {
+      lambdaFunction: props.registryFunction,
+      payload: sfn.TaskInput.fromObject(payload),
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+
+  const failRelease = new tasks.LambdaInvoke(scope, 'FailRelease', {
+    lambdaFunction: props.registryFunction,
+    payload: sfn.TaskInput.fromObject({
+      action: 'fail',
+      corpusId: sfn.JsonPath.stringAt('$.corpusId'),
+      releaseId: sfn.JsonPath.stringAt('$.releaseId'),
+      reason: sfn.JsonPath.stringAt('$.failureReason'),
+    }),
+    resultPath: sfn.JsonPath.DISCARD,
+  }).next(
+    new sfn.Fail(scope, 'ReleaseFailed', {
+      error: 'ReleaseGateFailed',
+      cause: 'A release gate failed; the active pointer was not modified',
+    }),
+  );
+
+  const catchToFail: sfn.CatchProps = {
+    errors: ['States.ALL'],
+    resultPath: '$.error',
+  };
+
+  const promoteRelease = new tasks.LambdaInvoke(scope, 'PromoteRelease', {
+    lambdaFunction: props.registryFunction,
+    payload: sfn.TaskInput.fromObject({
+      action: 'promote',
+      corpusId: sfn.JsonPath.stringAt('$.corpusId'),
+      releaseId: sfn.JsonPath.stringAt('$.releaseId'),
+      expectedPreviousReleaseId: sfn.JsonPath.stringAt('$.pointer.activeReleaseId'),
+    }),
+    resultPath: sfn.JsonPath.DISCARD,
+  })
+    .addCatch(failRelease, catchToFail)
+    .next(new sfn.Succeed(scope, 'ReleaseSucceeded'));
+
+  const gateD = new sfn.Choice(scope, 'GateDChoice')
+    .when(sfn.Condition.booleanEquals('$.gateD.passed', true), promoteRelease)
+    .otherwise(failRelease);
+
+  const evaluateSmoke = new tasks.LambdaInvoke(scope, 'EvaluateSmoke', {
+    lambdaFunction: props.checkGatesFunction,
+    payload: sfn.TaskInput.fromObject({
+      gate: 'smokeRetrieval',
+      expectation: sfn.JsonPath.stringAt('$.smokeExpectation'),
+      retrievedDocumentIds: sfn.JsonPath.listAt('$.smokeDocumentIds'),
+      target: sfn.JsonPath.stringAt('$.smokeTarget'),
+    }),
+    resultSelector: { passed: sfn.JsonPath.booleanAt('$.Payload.passed') },
+    resultPath: '$.gateD',
+  })
+    .addCatch(failRelease, catchToFail)
+    .next(gateD);
+
+  const smokeRetrieve = new tasks.CallAwsService(scope, 'SmokeRetrieve', {
+    service: 'bedrockagentruntime',
+    action: 'retrieve',
+    parameters: {
+      KnowledgeBaseId: sfn.JsonPath.stringAt('$.knowledgeBaseId'),
+      RetrievalQuery: { Text: sfn.JsonPath.stringAt('$.smokeQuery') },
+      RetrievalConfiguration: {
+        ManagedSearchConfiguration: { NumberOfResults: 10 },
+      },
+    },
+    iamResources: [props.knowledgeBaseArn],
+    iamAction: 'bedrock:Retrieve',
+    resultPath: '$.smoke',
+  })
+    .addCatch(failRelease, catchToFail)
+    .next(evaluateSmoke);
+
+  const markTesting = registryCall('MarkTesting', {
+    action: 'advanceStatus',
+    corpusId: sfn.JsonPath.stringAt('$.corpusId'),
+    releaseId: sfn.JsonPath.stringAt('$.releaseId'),
+    status: 'TESTING',
+  }).next(smokeRetrieve);
+
+  const waitForSettlement = new sfn.Wait(scope, 'WaitForSettlement', {
+    time: sfn.WaitTime.duration(cdk.Duration.seconds(15)),
+  });
+
+  const incrementPollAttempt = new sfn.Pass(scope, 'IncrementPollAttempt', {
+    parameters: {
+      'pollAttempt.$': 'States.MathAdd($.pollAttempt, 1)',
+    },
+    resultPath: '$.pollAttemptHolder',
+  }).next(waitForSettlement);
+
+  const gateC = new sfn.Choice(scope, 'GateCChoice')
+    .when(
+      sfn.Condition.and(
+        sfn.Condition.booleanEquals('$.gateC.settled', true),
+        sfn.Condition.booleanEquals('$.gateC.passed', true),
+      ),
+      markTesting,
+    )
+    .when(
+      sfn.Condition.and(
+        sfn.Condition.booleanEquals('$.gateC.settled', true),
+        sfn.Condition.booleanEquals('$.gateC.passed', false),
+      ),
+      failRelease,
+    )
+    .when(
+      sfn.Condition.numberGreaterThanEquals('$.pollAttempt', props.maxPollAttempts),
+      failRelease,
+    )
+    .otherwise(incrementPollAttempt);
+
+  const evaluateIngestStatus = new tasks.LambdaInvoke(scope, 'EvaluateIngestStatus', {
+    lambdaFunction: props.checkGatesFunction,
+    payload: sfn.TaskInput.fromObject({
+      gate: 'ingestStatus',
+      documentDetails: sfn.JsonPath.listAt('$.polled.documentDetails'),
+    }),
+    resultSelector: {
+      settled: sfn.JsonPath.booleanAt('$.Payload.settled'),
+      passed: sfn.JsonPath.booleanAt('$.Payload.passed'),
+      failures: sfn.JsonPath.listAt('$.Payload.failures'),
+    },
+    resultPath: '$.gateC',
+  })
+    .addCatch(failRelease, catchToFail)
+    .next(gateC);
+
+  const getDocumentStatuses = new tasks.CallAwsService(scope, 'GetDocumentStatuses', {
+    service: 'bedrockagent',
+    action: 'getKnowledgeBaseDocuments',
+    parameters: {
+      KnowledgeBaseId: sfn.JsonPath.stringAt('$.knowledgeBaseId'),
+      DataSourceId: sfn.JsonPath.stringAt('$.dataSourceId'),
+      DocumentIdentifiers: sfn.JsonPath.listAt('$.pollIdentifiers'),
+    },
+    iamResources: [props.knowledgeBaseArn],
+    iamAction: 'bedrock:GetKnowledgeBaseDocuments',
+    resultSelector: {
+      documentDetails: sfn.JsonPath.listAt('$.DocumentDetails'),
+    },
+    resultPath: '$.polled',
+  })
+    .addCatch(failRelease, catchToFail)
+    .next(evaluateIngestStatus);
+
+  waitForSettlement.next(getDocumentStatuses);
+
+  const deleteBatches = new sfn.Map(scope, 'DeleteBatches', {
+    itemsPath: '$.deleteBatches',
+    maxConcurrency: 1,
+    resultPath: sfn.JsonPath.DISCARD,
+  });
+  deleteBatches.itemProcessor(
+    new tasks.CallAwsService(scope, 'DeleteBatch', {
+      service: 'bedrockagent',
+      action: 'deleteKnowledgeBaseDocuments',
+      parameters: {
+        KnowledgeBaseId: sfn.JsonPath.stringAt('$.knowledgeBaseId'),
+        DataSourceId: sfn.JsonPath.stringAt('$.dataSourceId'),
+        ClientToken: sfn.JsonPath.stringAt('$.clientToken'),
+        DocumentIdentifiers: sfn.JsonPath.listAt('$.identifiers'),
+      },
+      iamResources: [props.knowledgeBaseArn],
+      iamAction: 'bedrock:DeleteKnowledgeBaseDocuments',
+    }).addRetry(THROTTLE_RETRY),
+  );
+  deleteBatches.addCatch(failRelease, catchToFail);
+  deleteBatches.next(waitForSettlement);
+
+  const ingestBatches = new sfn.Map(scope, 'IngestBatches', {
+    itemsPath: '$.ingestBatches',
+    maxConcurrency: 1,
+    resultPath: sfn.JsonPath.DISCARD,
+  });
+  ingestBatches.itemProcessor(
+    new tasks.CallAwsService(scope, 'IngestBatch', {
+      service: 'bedrockagent',
+      action: 'ingestKnowledgeBaseDocuments',
+      parameters: {
+        KnowledgeBaseId: sfn.JsonPath.stringAt('$.knowledgeBaseId'),
+        DataSourceId: sfn.JsonPath.stringAt('$.dataSourceId'),
+        ClientToken: sfn.JsonPath.stringAt('$.clientToken'),
+        Documents: sfn.JsonPath.listAt('$.documents'),
+      },
+      iamResources: [props.knowledgeBaseArn],
+      iamAction: 'bedrock:IngestKnowledgeBaseDocuments',
+    }).addRetry(THROTTLE_RETRY),
+  );
+  ingestBatches.addCatch(failRelease, catchToFail);
+  ingestBatches.next(deleteBatches);
+
+  const markIngesting = registryCall('MarkIngesting', {
+    action: 'advanceStatus',
+    corpusId: sfn.JsonPath.stringAt('$.corpusId'),
+    releaseId: sfn.JsonPath.stringAt('$.releaseId'),
+    status: 'INGESTING',
+  }).next(ingestBatches);
+
+  const gateB = new sfn.Choice(scope, 'GateBChoice')
+    .when(sfn.Condition.booleanEquals('$.gateB.passed', true), markIngesting)
+    .otherwise(failRelease);
+
+  const checkDeletionRatio = new tasks.LambdaInvoke(scope, 'CheckDeletionRatio', {
+    lambdaFunction: props.checkGatesFunction,
+    payload: sfn.TaskInput.fromObject({
+      gate: 'deletionRatio',
+      deletedCount: sfn.JsonPath.numberAt('$.changeCounts.deleted'),
+      previousDocumentCount: sfn.JsonPath.numberAt('$.previousDocumentCount'),
+      threshold: props.deletionRatioThreshold,
+      allowBulkDeletion: sfn.JsonPath.stringAt('$.allowBulkDeletion'),
+    }),
+    resultSelector: {
+      passed: sfn.JsonPath.booleanAt('$.Payload.passed'),
+      ratio: sfn.JsonPath.numberAt('$.Payload.ratio'),
+    },
+    resultPath: '$.gateB',
+  })
+    .addCatch(failRelease, catchToFail)
+    .next(gateB);
+
+  const gateA = new sfn.Choice(scope, 'GateAChoice')
+    .when(sfn.Condition.booleanEquals('$.gateA.passed', true), checkDeletionRatio)
+    .otherwise(failRelease);
+
+  const verifyS3 = new tasks.LambdaInvoke(scope, 'VerifyS3Consistency', {
+    lambdaFunction: props.verifyS3Function,
+    payload: sfn.TaskInput.fromObject({
+      prefix: sfn.JsonPath.stringAt('$.prefix'),
+      upserts: sfn.JsonPath.listAt('$.upserts'),
+      deletions: sfn.JsonPath.listAt('$.deletions'),
+    }),
+    resultSelector: {
+      passed: sfn.JsonPath.booleanAt('$.Payload.passed'),
+      missing: sfn.JsonPath.listAt('$.Payload.missing'),
+      mismatched: sfn.JsonPath.listAt('$.Payload.mismatched'),
+      surviving: sfn.JsonPath.listAt('$.Payload.surviving'),
+    },
+    resultPath: '$.gateA',
+  })
+    .addCatch(failRelease, catchToFail)
+    .next(gateA);
+
+  const createReleaseRecord = new tasks.LambdaInvoke(scope, 'CreateReleaseRecord', {
+    lambdaFunction: props.registryFunction,
+    payload: sfn.TaskInput.fromObject({
+      action: 'createRelease',
+      corpusId: sfn.JsonPath.stringAt('$.corpusId'),
+      releaseId: sfn.JsonPath.stringAt('$.releaseId'),
+      manifestS3Uri: sfn.JsonPath.stringAt('$.manifestS3Uri'),
+      manifestS3VersionId: sfn.JsonPath.stringAt('$.manifestS3VersionId'),
+      parentReleaseId: sfn.JsonPath.stringAt('$.pointer.activeReleaseId'),
+      executionArn: sfn.JsonPath.stringAt('$$.Execution.Id'),
+    }),
+    resultPath: sfn.JsonPath.DISCARD,
+  })
+    .addCatch(failRelease, catchToFail)
+    .next(verifyS3);
+
+  // An empty change set exits before a release record exists, so no FAILED or
+  // ACTIVE record is written for a no-op publish.
+  const isChangeSetEmpty = new sfn.Choice(scope, 'IsChangeSetEmpty')
+    .when(
+      sfn.Condition.and(
+        sfn.Condition.numberEquals('$.changeCounts.added', 0),
+        sfn.Condition.numberEquals('$.changeCounts.modified', 0),
+        sfn.Condition.numberEquals('$.changeCounts.deleted', 0),
+      ),
+      new sfn.Succeed(scope, 'NoChanges'),
+    )
+    .otherwise(createReleaseRecord);
+
+  const readPointer = new tasks.LambdaInvoke(scope, 'ReadPointer', {
+    lambdaFunction: props.registryFunction,
+    payload: sfn.TaskInput.fromObject({
+      action: 'readPointer',
+      corpusId: sfn.JsonPath.stringAt('$.corpusId'),
+    }),
+    resultSelector: {
+      activeReleaseId: sfn.JsonPath.stringAt('$.Payload.activeReleaseId'),
+    },
+    resultPath: '$.pointer',
+  }).next(isChangeSetEmpty);
+
+  return new sfn.StateMachine(scope, id, {
+    stateMachineType: sfn.StateMachineType.STANDARD,
+    definitionBody: sfn.DefinitionBody.fromChainable(readPointer),
+    timeout: cdk.Duration.hours(2),
+    logs: {
+      destination: props.logGroup,
+      level: sfn.LogLevel.ALL,
+      includeExecutionData: true,
+    },
+    tracingEnabled: true,
+  });
+}
+```
+
+修改 `infra/lib/release-stack.ts`：在文件顶部加入 import：
+
+```typescript
+import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
+import { buildReleaseStateMachine } from './state-machine';
+```
+
+在类中加入公开字段声明：
+
+```typescript
+  public readonly stateMachine: sfn.StateMachine;
+```
+
+在 `publisherRole` 创建之后、`CfnOutput` 之前插入：
+
+```typescript
+    this.stateMachine = buildReleaseStateMachine(this, 'ReleaseStateMachine', {
+      verifyS3Function: this.verifyS3Function,
+      checkGatesFunction: this.checkGatesFunction,
+      registryFunction: this.registryFunction,
+      logGroup: props.stateMachineLogGroup,
+      knowledgeBaseArn: props.knowledgeBaseArn,
+      deletionRatioThreshold: props.deletionRatioThreshold,
+      maxPollAttempts: 60,
+    });
+    this.stateMachine.grantStartExecution(this.publisherRole);
+    this.stateMachine.grantRead(this.publisherRole);
+```
+
+并追加输出：
+
+```typescript
+    new cdk.CfnOutput(this, 'StateMachineArn', {
+      value: this.stateMachine.stateMachineArn,
+      exportName: `${this.stackName}-StateMachineArn`,
+    });
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `cd infra && npx jest`
+
+Expected: 全部 passed（foundation 6 + knowledge-base 7 + release 9 + state-machine 10）。
+
+- [ ] **Step 5: 校验合成结果**
+
+Run: `cd infra && npx cdk synth ManagedKbRelease > /tmp/release-synth.yaml && echo OK`
+
+Expected: OK。若 `AwsSolutions-IAM4`（Lambda 使用 AWS 托管的基础执行策略）或
+`AwsSolutions-SF1`/`SF2` 告警，前者添加抑制项并说明使用托管基础执行策略的理由，后两者本
+实现已启用全量日志与 X-Ray，应当不触发。
+
+- [ ] **Step 6: 提交**
+
+```bash
+cd .. && git add infra
+git commit -m "Wire the fail-closed release state machine
+
+Route every gate's non-passing branch to FailRelease and give no gate an edge
+that reaches promotion early, so fail-closed holds by topology rather than by
+remembering to check a return value. Bound the status poller so an unexpected
+document state cannot spin forever."
+```
