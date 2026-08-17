@@ -2853,3 +2853,670 @@ limit, sent a CUSTOM payload to an S3 data source, and queried with
 vectorSearchConfiguration, which turns a broken probe into a silent zero-hit
 result."
 ```
+
+---
+
+## Task 9: CDK 项目初始化与 FoundationStack
+
+**Files:**
+- Create: `infra/package.json`
+- Create: `infra/tsconfig.json`
+- Create: `infra/jest.config.js`
+- Create: `infra/cdk.json`
+- Create: `infra/bin/app.ts`
+- Create: `infra/lib/foundation-stack.ts`
+- Create: `infra/test/foundation-stack.test.ts`
+- Modify: `.gitignore`
+
+版本组合已核实兼容：`ts-jest@29` 要求 `typescript <7`，而 TypeScript latest 是 7.x，
+故锁定 `typescript@5.9.3`。`cdk-nag@3` 要求 `constructs ^10.5.1`。
+
+- [ ] **Step 1: 建立 CDK 项目骨架**
+
+创建 `infra/package.json`：
+
+```json
+{
+  "name": "agentcore-managed-kb-infra",
+  "version": "0.1.0",
+  "private": true,
+  "bin": { "infra": "bin/app.js" },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "synth": "cdk synth",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@types/jest": "30.0.0",
+    "@types/node": "24.3.0",
+    "aws-cdk": "2.1137.0",
+    "jest": "30.4.2",
+    "ts-jest": "29.4.12",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.265.0",
+    "cdk-nag": "3.0.2",
+    "constructs": "10.8.1"
+  }
+}
+```
+
+创建 `infra/tsconfig.json`：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "declaration": true,
+    "inlineSourceMap": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "typeRoots": ["./node_modules/@types"]
+  },
+  "exclude": ["node_modules", "cdk.out"]
+}
+```
+
+创建 `infra/jest.config.js`：
+
+```javascript
+module.exports = {
+  testEnvironment: 'node',
+  roots: ['<rootDir>/test'],
+  testMatch: ['**/*.test.ts'],
+  transform: { '^.+\\.tsx?$': 'ts-jest' },
+};
+```
+
+创建 `infra/cdk.json`：
+
+```json
+{
+  "app": "npx ts-node --prefer-ts-exts bin/app.ts",
+  "watch": { "exclude": ["README.md", "cdk*.json", "**/*.d.ts", "**/*.js", "tsconfig.json", "package*.json", "yarn.lock", "node_modules", "test"] },
+  "context": {
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:enablePartitionLiterals": true
+  }
+}
+```
+
+修改 `.gitignore`，在末尾追加：
+
+```text
+
+# CDK build output
+infra/node_modules/
+infra/cdk.out/
+infra/*.js
+infra/*.d.ts
+!infra/jest.config.js
+```
+
+安装依赖：`cd infra && npm install`
+
+- [ ] **Step 2: 写失败测试**
+
+创建 `infra/test/foundation-stack.test.ts`：
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import { Template, Match } from 'aws-cdk-lib/assertions';
+import { FoundationStack } from '../lib/foundation-stack';
+
+function synth(): Template {
+  const app = new cdk.App();
+  const stack = new FoundationStack(app, 'TestFoundation', {
+    env: { account: '123456789012', region: 'us-east-1' },
+    corpusId: 'demo',
+  });
+  return Template.fromStack(stack);
+}
+
+describe('FoundationStack', () => {
+  test('creates a customer managed key with rotation enabled', () => {
+    synth().hasResourceProperties('AWS::KMS::Key', {
+      EnableKeyRotation: true,
+    });
+  });
+
+  test('both buckets are versioned and encrypted with the CMK', () => {
+    const template = synth();
+    template.resourceCountIs('AWS::S3::Bucket', 2);
+    template.allResourcesProperties('AWS::S3::Bucket', {
+      VersioningConfiguration: { Status: 'Enabled' },
+      BucketEncryption: {
+        ServerSideEncryptionConfiguration: [
+          {
+            ServerSideEncryptionByDefault: {
+              SSEAlgorithm: 'aws:kms',
+              KMSMasterKeyID: Match.anyValue(),
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  test('both buckets block all public access', () => {
+    synth().allResourcesProperties('AWS::S3::Bucket', {
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+    });
+  });
+
+  test('stateful resources are retained on stack deletion', () => {
+    const template = synth();
+    for (const type of ['AWS::S3::Bucket', 'AWS::KMS::Key']) {
+      const resources = template.findResources(type);
+      for (const logicalId of Object.keys(resources)) {
+        expect(resources[logicalId].DeletionPolicy).toBe('Retain');
+      }
+    }
+  });
+
+  test('canonical bucket expires noncurrent versions but registry bucket does not', () => {
+    const template = synth();
+    const buckets = template.findResources('AWS::S3::Bucket');
+    const lifecycles = Object.values(buckets).map(
+      (bucket) => bucket.Properties?.LifecycleConfiguration,
+    );
+    const withExpiry = lifecycles.filter((config) =>
+      JSON.stringify(config ?? {}).includes('NoncurrentVersionExpiration'),
+    );
+    expect(withExpiry).toHaveLength(1);
+  });
+
+  test('exposes bucket names and key arn for dependent stacks', () => {
+    const app = new cdk.App();
+    const stack = new FoundationStack(app, 'TestFoundation', {
+      env: { account: '123456789012', region: 'us-east-1' },
+      corpusId: 'demo',
+    });
+    expect(stack.canonicalBucket).toBeDefined();
+    expect(stack.registryBucket).toBeDefined();
+    expect(stack.encryptionKey).toBeDefined();
+  });
+});
+```
+
+- [ ] **Step 3: 运行测试确认失败**
+
+Run: `cd infra && npx jest test/foundation-stack.test.ts`
+
+Expected: FAIL —— `Cannot find module '../lib/foundation-stack'`。
+
+- [ ] **Step 4: 实现 FoundationStack**
+
+创建 `infra/lib/foundation-stack.ts`：
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import * as kms from 'aws-cdk-lib/aws-kms';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import { Construct } from 'constructs';
+
+export interface FoundationStackProps extends cdk.StackProps {
+  readonly corpusId: string;
+}
+
+/**
+ * Stateful storage and encryption shared by the knowledge base and release
+ * stacks. Retained on deletion so tearing down the platform never destroys
+ * published content or audit evidence.
+ */
+export class FoundationStack extends cdk.Stack {
+  public readonly encryptionKey: kms.Key;
+  public readonly canonicalBucket: s3.Bucket;
+  public readonly registryBucket: s3.Bucket;
+  public readonly stateMachineLogGroup: logs.LogGroup;
+
+  constructor(scope: Construct, id: string, props: FoundationStackProps) {
+    super(scope, id, props);
+
+    this.encryptionKey = new kms.Key(this, 'PlatformKey', {
+      description: `Managed KB platform CMK for corpus ${props.corpusId}`,
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Canonical documents are republishable, so noncurrent versions expire.
+    this.canonicalBucket = new s3.Bucket(this, 'CanonicalBucket', {
+      versioned: true,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: this.encryptionKey,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        { abortIncompleteMultipartUploadAfter: cdk.Duration.days(7) },
+        { noncurrentVersionExpiration: cdk.Duration.days(30) },
+      ],
+    });
+
+    // Manifests are audit evidence, so no expiry rule is configured.
+    this.registryBucket = new s3.Bucket(this, 'RegistryBucket', {
+      versioned: true,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: this.encryptionKey,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        { abortIncompleteMultipartUploadAfter: cdk.Duration.days(7) },
+      ],
+    });
+
+    this.stateMachineLogGroup = new logs.LogGroup(this, 'ReleaseStateMachineLogs', {
+      retention: logs.RetentionDays.THREE_MONTHS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    new cdk.CfnOutput(this, 'CanonicalBucketName', {
+      value: this.canonicalBucket.bucketName,
+      exportName: `${this.stackName}-CanonicalBucketName`,
+    });
+    new cdk.CfnOutput(this, 'RegistryBucketName', {
+      value: this.registryBucket.bucketName,
+      exportName: `${this.stackName}-RegistryBucketName`,
+    });
+    new cdk.CfnOutput(this, 'EncryptionKeyArn', {
+      value: this.encryptionKey.keyArn,
+      exportName: `${this.stackName}-EncryptionKeyArn`,
+    });
+  }
+}
+```
+
+创建 `infra/bin/app.ts`（此时只挂 FoundationStack，后续任务追加）：
+
+```typescript
+#!/usr/bin/env node
+import * as cdk from 'aws-cdk-lib';
+import { AwsSolutionsChecks } from 'cdk-nag';
+import { FoundationStack } from '../lib/foundation-stack';
+
+const app = new cdk.App();
+
+const corpusId = app.node.tryGetContext('corpusId') ?? 'demo';
+const env = {
+  account: process.env.CDK_DEFAULT_ACCOUNT,
+  region: process.env.CDK_DEFAULT_REGION,
+};
+
+const foundation = new FoundationStack(app, 'ManagedKbFoundation', {
+  env,
+  corpusId,
+  terminationProtection: true,
+  description: 'Stateful storage and encryption for the managed KB platform',
+});
+
+void foundation;
+
+cdk.Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));
+```
+
+- [ ] **Step 5: 运行测试确认通过**
+
+Run: `cd infra && npx jest test/foundation-stack.test.ts`
+
+Expected: 6 passed。
+
+- [ ] **Step 6: 处理 cdk-nag 告警**
+
+Run: `cd infra && npx cdk synth ManagedKbFoundation 2>&1 | head -40`
+
+`AwsSolutions-S1`（服务器访问日志）会对两个桶告警。为它们添加抑制项并附理由——在
+`bin/app.ts` 的 `cdk.Aspects` 之前插入：
+
+```typescript
+import { NagSuppressions } from 'cdk-nag';
+
+NagSuppressions.addStackSuppressions(foundation, [
+  {
+    id: 'AwsSolutions-S1',
+    reason:
+      'Object-level access is audited through CloudTrail data events for this ' +
+      'reference implementation; a separate access log bucket would itself need ' +
+      'a log bucket and adds no evidence not already captured.',
+  },
+]);
+```
+
+重新执行 synth，确认无未抑制告警。若出现其他告警，逐条添加抑制项并写明理由，或修正配置。
+
+- [ ] **Step 7: 提交**
+
+```bash
+cd .. && git add infra .gitignore
+git commit -m "Add CDK foundation stack for storage and encryption
+
+Separate the canonical and registry buckets because their lifecycles differ:
+canonical objects are republishable and expire noncurrent versions, while
+manifests are audit evidence and are kept indefinitely."
+```
+
+---
+
+## Task 10: KnowledgeBaseStack
+
+**Files:**
+- Create: `infra/lib/knowledge-base-stack.ts`
+- Create: `infra/test/knowledge-base-stack.test.ts`
+- Modify: `infra/bin/app.ts`
+- Delete: `scripts/02_provision.sh`
+
+`ManagedKnowledgeBaseConfiguration` 是 createOnly——改 embedding 配置会替换 KB 并丢失
+索引。这是本 Stack 单独存在并开启终止保护的原因。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `infra/test/knowledge-base-stack.test.ts`：
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import { Template, Match } from 'aws-cdk-lib/assertions';
+import { FoundationStack } from '../lib/foundation-stack';
+import { KnowledgeBaseStack } from '../lib/knowledge-base-stack';
+
+const env = { account: '123456789012', region: 'us-east-1' };
+
+function synth(): Template {
+  const app = new cdk.App();
+  const foundation = new FoundationStack(app, 'TestFoundation', { env, corpusId: 'demo' });
+  const stack = new KnowledgeBaseStack(app, 'TestKnowledgeBase', {
+    env,
+    corpusId: 'demo',
+    canonicalBucket: foundation.canonicalBucket,
+    encryptionKey: foundation.encryptionKey,
+    canonicalPrefix: 'canonical/demo',
+  });
+  return Template.fromStack(stack);
+}
+
+describe('KnowledgeBaseStack', () => {
+  test('creates a managed knowledge base with a managed embedding model', () => {
+    synth().hasResourceProperties('AWS::Bedrock::KnowledgeBase', {
+      KnowledgeBaseConfiguration: {
+        Type: 'MANAGED',
+        ManagedKnowledgeBaseConfiguration: {
+          EmbeddingModelType: 'MANAGED',
+        },
+      },
+    });
+  });
+
+  test('knowledge base is encrypted with the platform CMK', () => {
+    synth().hasResourceProperties('AWS::Bedrock::KnowledgeBase', {
+      KnowledgeBaseConfiguration: {
+        ManagedKnowledgeBaseConfiguration: {
+          ServerSideEncryptionConfiguration: {
+            KmsKeyArn: Match.anyValue(),
+          },
+        },
+      },
+    });
+  });
+
+  test('data source retains data so index content survives stack changes', () => {
+    synth().hasResourceProperties('AWS::Bedrock::DataSource', {
+      DataDeletionPolicy: 'RETAIN',
+    });
+  });
+
+  test('data source reads only the configured canonical prefix', () => {
+    synth().hasResourceProperties('AWS::Bedrock::DataSource', {
+      DataSourceConfiguration: {
+        Type: 'S3',
+        S3Configuration: {
+          InclusionPrefixes: ['canonical/demo'],
+        },
+      },
+    });
+  });
+
+  test('service role grants read access scoped to the canonical prefix', () => {
+    const template = synth();
+    const policies = template.findResources('AWS::IAM::Policy');
+    const statements = Object.values(policies).flatMap(
+      (policy) => policy.Properties.PolicyDocument.Statement,
+    );
+    const getObject = statements.find((statement: { Action: string | string[] }) =>
+      JSON.stringify(statement.Action).includes('s3:GetObject'),
+    );
+    expect(JSON.stringify(getObject.Resource)).toContain('canonical/demo/*');
+  });
+
+  test('service role does not grant write access to the canonical bucket', () => {
+    const template = synth();
+    const policies = template.findResources('AWS::IAM::Policy');
+    const rendered = JSON.stringify(Object.values(policies));
+    expect(rendered).not.toContain('s3:PutObject');
+    expect(rendered).not.toContain('s3:DeleteObject');
+  });
+
+  test('trust policy is scoped to this account', () => {
+    synth().hasResourceProperties('AWS::IAM::Role', {
+      AssumeRolePolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Principal: { Service: 'bedrock.amazonaws.com' },
+            Condition: Match.objectLike({
+              StringEquals: Match.objectLike({
+                'aws:SourceAccount': '123456789012',
+              }),
+            }),
+          }),
+        ]),
+      },
+    });
+  });
+});
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `cd infra && npx jest test/knowledge-base-stack.test.ts`
+
+Expected: FAIL —— `Cannot find module '../lib/knowledge-base-stack'`。
+
+- [ ] **Step 3: 实现 KnowledgeBaseStack**
+
+创建 `infra/lib/knowledge-base-stack.ts`：
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import * as bedrock from 'aws-cdk-lib/aws-bedrock';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import { Construct } from 'constructs';
+
+export interface KnowledgeBaseStackProps extends cdk.StackProps {
+  readonly corpusId: string;
+  readonly canonicalBucket: s3.IBucket;
+  readonly encryptionKey: kms.IKey;
+  readonly canonicalPrefix: string;
+}
+
+/**
+ * The managed knowledge base and its data source.
+ *
+ * Isolated in its own stack because ManagedKnowledgeBaseConfiguration is
+ * create-only: changing the embedding configuration replaces the knowledge base
+ * and discards the index. Keeping it separate lets the release stack be rebuilt
+ * freely without risking indexed content.
+ */
+export class KnowledgeBaseStack extends cdk.Stack {
+  public readonly knowledgeBaseId: string;
+  public readonly dataSourceId: string;
+  public readonly knowledgeBaseArn: string;
+
+  constructor(scope: Construct, id: string, props: KnowledgeBaseStackProps) {
+    super(scope, id, props);
+
+    const serviceRole = new iam.Role(this, 'KnowledgeBaseServiceRole', {
+      assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com', {
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': this.account },
+          ArnLike: {
+            'aws:SourceArn': `arn:${this.partition}:bedrock:${this.region}:${this.account}:knowledge-base/*`,
+          },
+        },
+      }),
+      description: `Managed KB service role for corpus ${props.corpusId}`,
+    });
+
+    // Read-only, and narrowed to the prefix the data source actually indexes.
+    serviceRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        resources: [
+          props.canonicalBucket.arnForObjects(`${props.canonicalPrefix}/*`),
+        ],
+        conditions: { StringEquals: { 'aws:ResourceAccount': this.account } },
+      }),
+    );
+    serviceRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [props.canonicalBucket.bucketArn],
+        conditions: {
+          StringEquals: { 'aws:ResourceAccount': this.account },
+          'ForAnyValue:StringLike': {
+            's3:prefix': [props.canonicalPrefix, `${props.canonicalPrefix}/*`],
+          },
+        },
+      }),
+    );
+    props.encryptionKey.grantDecrypt(serviceRole);
+
+    const knowledgeBase = new bedrock.CfnKnowledgeBase(this, 'KnowledgeBase', {
+      name: `${props.corpusId}-managed-kb`,
+      description: `Managed knowledge base for corpus ${props.corpusId}`,
+      roleArn: serviceRole.roleArn,
+      knowledgeBaseConfiguration: {
+        type: 'MANAGED',
+        managedKnowledgeBaseConfiguration: {
+          embeddingModelType: 'MANAGED',
+          serverSideEncryptionConfiguration: {
+            kmsKeyArn: props.encryptionKey.keyArn,
+          },
+        },
+      },
+      tags: { Project: 'agentcore-managed-kb', CorpusId: props.corpusId },
+    });
+    knowledgeBase.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+
+    // AWS::Bedrock::DataSource is not taggable, so cost allocation tags live on
+    // the knowledge base and the buckets instead.
+    const dataSource = new bedrock.CfnDataSource(this, 'DataSource', {
+      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+      name: `${props.corpusId}-canonical-s3`,
+      dataDeletionPolicy: 'RETAIN',
+      dataSourceConfiguration: {
+        type: 'S3',
+        s3Configuration: {
+          bucketArn: props.canonicalBucket.bucketArn,
+          inclusionPrefixes: [props.canonicalPrefix],
+        },
+      },
+    });
+    dataSource.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+
+    this.knowledgeBaseId = knowledgeBase.attrKnowledgeBaseId;
+    this.knowledgeBaseArn = knowledgeBase.attrKnowledgeBaseArn;
+    this.dataSourceId = dataSource.attrDataSourceId;
+
+    new cdk.CfnOutput(this, 'KnowledgeBaseId', {
+      value: this.knowledgeBaseId,
+      exportName: `${this.stackName}-KnowledgeBaseId`,
+    });
+    new cdk.CfnOutput(this, 'DataSourceId', {
+      value: this.dataSourceId,
+      exportName: `${this.stackName}-DataSourceId`,
+    });
+  }
+}
+```
+
+修改 `infra/bin/app.ts`，在 `foundation` 之后、`void foundation;` 之前插入：
+
+```typescript
+const knowledgeBase = new KnowledgeBaseStack(app, 'ManagedKbKnowledgeBase', {
+  env,
+  corpusId,
+  canonicalBucket: foundation.canonicalBucket,
+  encryptionKey: foundation.encryptionKey,
+  canonicalPrefix: `canonical/${corpusId}`,
+  terminationProtection: true,
+  description: 'Managed knowledge base and data source',
+});
+knowledgeBase.addDependency(foundation);
+
+void knowledgeBase;
+```
+
+并在顶部加入 import：
+
+```typescript
+import { KnowledgeBaseStack } from '../lib/knowledge-base-stack';
+```
+
+删除 `void foundation;` 一行（不再需要，foundation 已被引用）。
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `cd infra && npx jest test/knowledge-base-stack.test.ts`
+
+Expected: 7 passed。
+
+- [ ] **Step 5: 校验 synth 与 nag**
+
+Run: `cd infra && npx cdk synth ManagedKbKnowledgeBase 2>&1 | tail -30`
+
+Expected: 成功合成。若 `AwsSolutions-IAM5` 因 `canonical/demo/*` 通配告警，添加抑制项：
+
+```typescript
+NagSuppressions.addStackSuppressions(knowledgeBase, [
+  {
+    id: 'AwsSolutions-IAM5',
+    reason:
+      'The wildcard is bounded to the single canonical prefix the data source ' +
+      'indexes; enumerating object keys is impossible because the corpus changes ' +
+      'with every release.',
+  },
+]);
+```
+
+- [ ] **Step 6: 删除被取代的 provisioning 脚本并提交**
+
+`scripts/02_provision.sh` 与本 Stack 功能重叠，保留两者会产生两个 provisioning 真相。
+
+```bash
+cd .. && git rm scripts/02_provision.sh
+git add infra
+git commit -m "Add CDK knowledge base stack and retire the provisioning script
+
+Isolate the knowledge base in its own stack with termination protection,
+because its managed configuration is create-only and a replacement would
+discard the index."
+```
+
+README 中英文对该脚本的引用在 Task 15 统一更新。
