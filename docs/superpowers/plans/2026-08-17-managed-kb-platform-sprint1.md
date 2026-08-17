@@ -4391,3 +4391,1106 @@ that reaches promotion early, so fail-closed holds by topology rather than by
 remembering to check a return value. Bound the status poller so an unexpected
 document state cannot spin forever."
 ```
+
+---
+
+## Task 13: 示例语料
+
+**Files:**
+- Create: `examples/corpus/` 下 13 篇 Markdown
+
+验收需要可提交、可重复的语料。不能用被 Git 忽略的 `artifacts/`。语料需覆盖三种情形：多级
+目录（产生 `domain`/`topic`）、带 front matter 的治理字段、以及一篇供 metadata-only 变更
+测试用的文档。
+
+- [ ] **Step 1: 建立语料**
+
+创建以下 13 个文件。每篇正文保持简短但语义可检索（冒烟检索需要能命中）。
+
+`examples/corpus/security/anti-cheat/detection-signals.md`：
+
+```markdown
+---
+title: 反作弊检测信号
+classification: INTERNAL
+owner: security-platform
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 反作弊检测信号
+
+玩家行为监控依赖三类信号：客户端遥测、服务端状态校验和会话票证验证。客户端遥测容易被篡改，
+因此只作为初筛；服务端状态校验比较玩家上报位置与服务端模拟结果的偏差；会话票证验证确认
+每个操作请求都来自一个有效且未过期的会话。
+
+三类信号需要联合判定。单独依赖任一类都会产生高误报率。
+```
+
+`examples/corpus/security/anti-cheat/response-playbook.md`：
+
+```markdown
+---
+title: 作弊响应处置手册
+classification: CONFIDENTIAL
+owner: security-platform
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 作弊响应处置手册
+
+确认作弊后的处置分四级：观察、限制匹配、临时封禁和永久封禁。处置必须保留证据链，包括触发
+的检测信号、时间窗口和人工复核记录。
+
+误封申诉需要在 72 小时内响应，并由不同于初判人员的复核者处理。
+```
+
+`examples/corpus/security/fraud/payment-abuse.md`：
+
+```markdown
+---
+title: 支付欺诈与退款滥用
+classification: CONFIDENTIAL
+owner: risk-team
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 支付欺诈与退款滥用
+
+退款滥用的典型模式是短周期内大量小额购买后集中申请退款。识别依赖账户年龄、历史退款率和
+设备指纹聚类。
+
+支付欺诈的处置不能仅依赖规则引擎。规则引擎处理已知模式，未知模式需要人工审查队列。
+```
+
+`examples/corpus/security/fraud/account-takeover.md`：
+
+```markdown
+---
+title: 账户接管防护
+classification: CONFIDENTIAL
+owner: risk-team
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 账户接管防护
+
+账户接管的主要入口是凭据填充和社工。防护措施包括异地登录挑战、设备绑定和高价值操作的
+二次验证。
+
+检测指标为登录失败率突增、单 IP 多账户尝试和登录后立即修改绑定信息的行为序列。
+```
+
+`examples/corpus/analytics/player/retention-metrics.md`：
+
+```markdown
+---
+title: 玩家留存指标
+classification: INTERNAL
+owner: data-platform
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 玩家留存指标
+
+次日留存、七日留存和三十日留存构成基础留存视图。三者趋势分化时，通常指向不同问题：次日
+留存下降多与新手引导有关，三十日留存下降多与内容消耗速度有关。
+
+留存指标必须按获取渠道分组观察，否则渠道结构变化会掩盖产品本身的变化。
+```
+
+`examples/corpus/analytics/player/session-analysis.md`：
+
+```markdown
+---
+title: 会话行为分析
+classification: INTERNAL
+owner: data-platform
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 会话行为分析
+
+会话时长分布通常是双峰的：短会话对应任务型登录，长会话对应沉浸型游玩。用均值描述会话时长
+会同时错误地表征这两类玩家。
+
+会话中断点分析比会话时长更有诊断价值，它直接指向玩家放弃的具体环节。
+```
+
+`examples/corpus/analytics/telemetry/event-schema.md`：
+
+```markdown
+---
+title: 遥测事件 Schema 治理
+classification: INTERNAL
+owner: data-platform
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 遥测事件 Schema 治理
+
+事件 Schema 必须版本化。新增字段可向后兼容，删除或改变字段语义不可。破坏性变更需要新的
+事件名而非修改既有事件。
+
+Schema 校验应在采集边界执行，而不是在分析阶段。分析阶段发现的 Schema 问题已经污染了历史
+数据。
+```
+
+`examples/corpus/analytics/telemetry/pipeline-slo.md`：
+
+```markdown
+---
+title: 数据管道 SLO
+classification: INTERNAL
+owner: data-platform
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 数据管道 SLO
+
+管道 SLO 包含新鲜度、完整性和正确性三个维度。新鲜度是端到端延迟的分位数；完整性是实际
+事件数与期望事件数的比值；正确性依赖对账检查。
+
+只监控新鲜度是常见错误。一个空管道的延迟指标看起来完美。
+```
+
+`examples/corpus/operations/runbook/incident-response.md`：
+
+```markdown
+---
+title: 事故响应流程
+classification: INTERNAL
+owner: sre
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 事故响应流程
+
+事故响应分为发现、止损、根因和改进四个阶段。止损优先于根因分析——先恢复服务，再查原因。
+
+事故等级由影响范围与持续时间共同决定，不由技术复杂度决定。
+```
+
+`examples/corpus/operations/runbook/capacity-planning.md`：
+
+```markdown
+---
+title: 容量规划
+classification: INTERNAL
+owner: sre
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 容量规划
+
+容量规划需要区分基线负载与峰值负载。游戏业务的峰值通常由版本更新和活动驱动，可预期但幅度
+难以精确预测。
+
+按峰值配置常态资源会造成显著浪费，按基线配置则在活动期不可用。弹性伸缩的启动延迟必须纳入
+计算。
+```
+
+`examples/corpus/operations/runbook/deployment-safety.md`：
+
+```markdown
+---
+title: 发布安全
+classification: INTERNAL
+owner: sre
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 发布安全
+
+发布安全依赖三项能力：可回滚、可观测和可分批。缺少任一项时，发布风险都不可控。
+
+回滚能力必须定期演练。未演练的回滚流程在真实事故中通常不可用。
+```
+
+`examples/corpus/governance/data-classification.md`：
+
+```markdown
+---
+title: 数据分级标准
+classification: INTERNAL
+owner: governance
+language: zh-CN
+lifecycle_status: ACTIVE
+---
+
+# 数据分级标准
+
+数据分为公开、内部、机密和受限四级。分级决定加密要求、访问审批路径和保留期限。
+
+分级是数据属性而非存储位置属性。同一个存储桶中可以并存不同分级的对象，因此访问控制必须
+在对象级而非仅在桶级表达。
+```
+
+`examples/corpus/governance/retention-policy.md`：
+
+```markdown
+---
+title: 数据保留策略
+classification: INTERNAL
+owner: governance
+language: zh-CN
+lifecycle_status: ACTIVE
+version_date: 2026-08-01
+---
+
+# 数据保留策略
+
+保留期限按数据分级与业务用途共同确定。遥测明细保留 90 天，聚合结果保留 25 个月，
+财务相关记录按法定要求保留。
+
+删除必须可验证。声明删除但仍可通过派生数据重建的内容不算已删除。
+```
+
+**这最后一篇带 `version_date` 字段**，Task 15 的集成测试用它做 metadata-only 变更测试
+（只改 `version_date` 而不改正文）。
+
+- [ ] **Step 2: 验证语料通过准备门禁**
+
+Run:
+
+```bash
+.venv/bin/python -c "
+from pathlib import Path
+from kbp.preparation import corpus
+manifest = corpus.prepare(
+    source_dir=Path('examples/corpus'),
+    output_dir=Path('/tmp/canonical-check'),
+    corpus_id='demo',
+    embedded_fields=('title', 'section_path', 'domain', 'topic'),
+)
+print('documents:', manifest['documentCount'])
+print('corpusSha256:', manifest['corpusSha256'][:16])
+"
+```
+
+Expected: `documents: 13`，并输出一个 SHA 前缀。
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add examples/corpus
+git commit -m "Add a fixed example corpus for repeatable acceptance
+
+Committed rather than drawn from the git-ignored artifacts directory so the
+end-to-end acceptance run can be repeated by anyone."
+```
+
+---
+
+## Task 14: 本地发布入口 cli/publish.py
+
+**Files:**
+- Create: `cli/__init__.py`
+- Create: `cli/publish.py`
+- Create: `tests/unit/test_publish_input.py`
+
+入口保持薄壳：本地准备与门禁、上传、构造状态机输入、StartExecution、轮询。状态机输入的
+构造逻辑是纯函数，可测。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `tests/unit/test_publish_input.py`：
+
+```python
+import pytest
+
+from cli import publish
+
+
+def document(name: str) -> dict:
+    return {
+        "documentId": name,
+        "file": f"{name}.md",
+        "contentSha256": "a" * 64,
+        "metadataSha256": "b" * 64,
+    }
+
+
+BASE = {
+    "corpus_id": "demo",
+    "release_id": "demo-20260817T101500Z-abcdef12",
+    "knowledge_base_id": "KB1",
+    "data_source_id": "DS1",
+    "bucket": "canonical",
+    "prefix": "canonical/demo",
+    "manifest_s3_uri": "s3://registry/manifests/demo/r1.json",
+    "manifest_s3_version_id": "v1",
+    "previous_document_count": 13,
+    "allow_bulk_deletion": False,
+}
+
+
+def test_input_carries_batches_for_both_channels():
+    payload = publish.build_execution_input(
+        **BASE,
+        changes={
+            "added": [document("a")],
+            "modified": [document("b")],
+            "deleted": [document("c")],
+        },
+    )
+
+    assert payload["changeCounts"] == {"added": 1, "modified": 1, "deleted": 1}
+    assert len(payload["ingestBatches"]) == 1
+    assert len(payload["ingestBatches"][0]["documents"]) == 2
+    assert len(payload["deleteBatches"]) == 1
+
+
+def test_each_batch_gets_a_distinct_idempotency_token():
+    many = [document(f"doc-{index}") for index in range(25)]
+    payload = publish.build_execution_input(
+        **BASE, changes={"added": many, "modified": [], "deleted": []}
+    )
+
+    tokens = [batch["clientToken"] for batch in payload["ingestBatches"]]
+    assert len(payload["ingestBatches"]) == 3
+    assert len(set(tokens)) == 3
+
+
+def test_poll_identifiers_cover_upserts_and_deletions():
+    payload = publish.build_execution_input(
+        **BASE,
+        changes={
+            "added": [document("a")],
+            "modified": [],
+            "deleted": [document("c")],
+        },
+    )
+
+    uris = [item["s3"]["uri"] for item in payload["pollIdentifiers"]]
+    assert "s3://canonical/canonical/demo/a.md" in uris
+    assert "s3://canonical/canonical/demo/c.md" in uris
+
+
+def test_smoke_expectation_is_present_when_documents_are_upserted():
+    payload = publish.build_execution_input(
+        **BASE, changes={"added": [document("a")], "modified": [], "deleted": []}
+    )
+
+    assert payload["smokeExpectation"] == "present"
+    assert payload["smokeTarget"] == "a"
+
+
+def test_delete_only_release_verifies_absence_instead():
+    """With nothing upserted there is no document to smoke test for presence."""
+    payload = publish.build_execution_input(
+        **BASE, changes={"added": [], "modified": [], "deleted": [document("c")]}
+    )
+
+    assert payload["smokeExpectation"] == "absent"
+    assert payload["smokeTarget"] == "c"
+
+
+def test_poll_attempt_starts_at_zero():
+    payload = publish.build_execution_input(
+        **BASE, changes={"added": [document("a")], "modified": [], "deleted": []}
+    )
+
+    assert payload["pollAttempt"] == 0
+
+
+def test_bulk_deletion_override_is_passed_through():
+    payload = publish.build_execution_input(
+        **{**BASE, "allow_bulk_deletion": True},
+        changes={"added": [], "modified": [], "deleted": [document("c")]},
+    )
+
+    assert payload["allowBulkDeletion"] is True
+
+
+def test_empty_change_set_produces_no_batches():
+    payload = publish.build_execution_input(
+        **BASE, changes={"added": [], "modified": [], "deleted": []}
+    )
+
+    assert payload["ingestBatches"] == []
+    assert payload["deleteBatches"] == []
+    assert payload["changeCounts"] == {"added": 0, "modified": 0, "deleted": 0}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `pytest tests/unit/test_publish_input.py -v`
+
+Expected: FAIL —— `ModuleNotFoundError: No module named 'cli'`。
+
+- [ ] **Step 3: 实现 publish.py**
+
+创建 `cli/__init__.py`（空文件）。
+
+创建 `cli/publish.py`：
+
+```python
+#!/usr/bin/env python3
+
+"""Local release entrypoint: prepare, upload, start the state machine, poll.
+
+Preparation runs locally rather than inside the state machine so a large corpus
+scan is not bound by Lambda limits and so the loop stays fast to iterate on.
+This script is the precursor to `kbctl release publish`.
+"""
+
+import argparse
+import hashlib
+import json
+import sys
+import time
+from pathlib import Path
+
+from kbp.ingestion import batching
+from kbp.preparation import corpus, diff
+from kbp.registry import manifest as manifest_module
+
+POLL_INTERVAL_SECONDS = 10
+EMBEDDED_FIELDS = ("title", "section_path", "domain", "topic")
+
+
+def build_execution_input(
+    *,
+    corpus_id: str,
+    release_id: str,
+    knowledge_base_id: str,
+    data_source_id: str,
+    bucket: str,
+    prefix: str,
+    manifest_s3_uri: str,
+    manifest_s3_version_id: str,
+    previous_document_count: int,
+    allow_bulk_deletion: bool,
+    changes: dict,
+) -> dict:
+    """Assemble the state machine input from a change set."""
+    upserts = changes["added"] + changes["modified"]
+    deletions = changes["deleted"]
+
+    ingest_batches = [
+        {
+            "knowledgeBaseId": knowledge_base_id,
+            "dataSourceId": data_source_id,
+            "clientToken": manifest_module.build_client_token(
+                release_id=release_id, operation="ingest", batch_index=index
+            ),
+            "documents": batching.build_ingest_payload(
+                documents=batch, bucket=bucket, prefix=prefix
+            ),
+        }
+        for index, batch in enumerate(batching.split_batches(upserts))
+    ]
+
+    delete_batches = [
+        {
+            "knowledgeBaseId": knowledge_base_id,
+            "dataSourceId": data_source_id,
+            "clientToken": manifest_module.build_client_token(
+                release_id=release_id, operation="delete", batch_index=index
+            ),
+            "identifiers": batching.build_delete_identifiers(
+                documents=batch, bucket=bucket, prefix=prefix
+            ),
+        }
+        for index, batch in enumerate(batching.split_batches(deletions))
+    ]
+
+    poll_identifiers = batching.build_delete_identifiers(
+        documents=upserts + deletions, bucket=bucket, prefix=prefix
+    )
+
+    # A delete-only release has no upserted document, so the smoke gate verifies
+    # that a removed document is no longer retrievable instead.
+    if upserts:
+        smoke_expectation = "present"
+        smoke_target = upserts[0]["documentId"]
+    elif deletions:
+        smoke_expectation = "absent"
+        smoke_target = deletions[0]["documentId"]
+    else:
+        smoke_expectation = "present"
+        smoke_target = ""
+
+    return {
+        "corpusId": corpus_id,
+        "releaseId": release_id,
+        "knowledgeBaseId": knowledge_base_id,
+        "dataSourceId": data_source_id,
+        "prefix": prefix,
+        "manifestS3Uri": manifest_s3_uri,
+        "manifestS3VersionId": manifest_s3_version_id,
+        "previousDocumentCount": previous_document_count,
+        "allowBulkDeletion": allow_bulk_deletion,
+        "changeCounts": {name: len(items) for name, items in changes.items()},
+        "upserts": upserts,
+        "deletions": deletions,
+        "ingestBatches": ingest_batches,
+        "deleteBatches": delete_batches,
+        "pollIdentifiers": poll_identifiers,
+        "pollAttempt": 0,
+        "smokeQuery": smoke_target,
+        "smokeExpectation": smoke_expectation,
+        "smokeTarget": smoke_target,
+        "smokeDocumentIds": [],
+        "failureReason": "",
+    }
+
+
+def upload_changed_objects(
+    s3_client, *, canonical_dir: Path, bucket: str, prefix: str, changes: dict
+) -> None:
+    """Upload changed objects and sidecars, and remove deleted ones.
+
+    Writing to S3 before direct ingestion is enforced unconditionally; see
+    ADR-006 for why this holds regardless of the A2 outcome.
+    """
+    for item in changes["added"] + changes["modified"]:
+        for relative in (item["file"], f"{item['file']}.metadata.json"):
+            body = (canonical_dir / relative).read_bytes()
+            s3_client.put_object(
+                Bucket=bucket,
+                Key=f"{prefix.strip('/')}/{relative}",
+                Body=body,
+                Metadata={"sha256": hashlib.sha256(body).hexdigest()},
+            )
+
+    for item in changes["deleted"]:
+        for relative in (item["file"], f"{item['file']}.metadata.json"):
+            s3_client.delete_object(
+                Bucket=bucket, Key=f"{prefix.strip('/')}/{relative}"
+            )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-dir", type=Path, required=True)
+    parser.add_argument("--corpus-id", required=True)
+    parser.add_argument("--canonical-bucket", required=True)
+    parser.add_argument("--registry-bucket", required=True)
+    parser.add_argument("--knowledge-base-id", required=True)
+    parser.add_argument("--data-source-id", required=True)
+    parser.add_argument("--state-machine-arn", required=True)
+    parser.add_argument("--source-commit", default="unknown")
+    parser.add_argument(
+        "--allow-bulk-deletion",
+        action="store_true",
+        help="Required to publish a deletion exceeding the configured ratio.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the execution input without uploading or starting anything.",
+    )
+    args = parser.parse_args()
+
+    import boto3
+
+    prefix = f"canonical/{args.corpus_id}"
+    work_dir = Path("/tmp") / f"canonical-{args.corpus_id}"
+
+    current = corpus.prepare(
+        source_dir=args.source_dir,
+        output_dir=work_dir,
+        corpus_id=args.corpus_id,
+        embedded_fields=EMBEDDED_FIELDS,
+    )
+
+    dynamodb = boto3.client("dynamodb")
+    s3_client = boto3.client("s3")
+    stepfunctions = boto3.client("stepfunctions")
+
+    from kbp.registry import store
+
+    table_name = args.corpus_id + "-releases"
+    active_release_id = store.read_active_release_id(
+        dynamodb, table_name=table_name, corpus_id=args.corpus_id
+    )
+
+    previous_manifest = None
+    if active_release_id:
+        response = s3_client.get_object(
+            Bucket=args.registry_bucket,
+            Key=f"manifests/{args.corpus_id}/{active_release_id}.json",
+        )
+        previous_manifest = json.loads(response["Body"].read())
+
+    changes = diff.diff_manifests(previous_manifest, current)
+    previous_document_count = (
+        previous_manifest["documentCount"] if previous_manifest else 0
+    )
+
+    timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    release_id = manifest_module.build_release_id(
+        corpus_id=args.corpus_id,
+        timestamp=timestamp,
+        corpus_sha256=current["corpusSha256"],
+    )
+    release_manifest = manifest_module.build_release_manifest(
+        release_id=release_id,
+        parent_release_id=active_release_id,
+        corpus_manifest=current,
+        change_counts={name: len(items) for name, items in changes.items()},
+        source_commit=args.source_commit,
+    )
+
+    manifest_key = f"manifests/{args.corpus_id}/{release_id}.json"
+    if args.dry_run:
+        payload = build_execution_input(
+            corpus_id=args.corpus_id,
+            release_id=release_id,
+            knowledge_base_id=args.knowledge_base_id,
+            data_source_id=args.data_source_id,
+            bucket=args.canonical_bucket,
+            prefix=prefix,
+            manifest_s3_uri=f"s3://{args.registry_bucket}/{manifest_key}",
+            manifest_s3_version_id="dry-run",
+            previous_document_count=previous_document_count,
+            allow_bulk_deletion=args.allow_bulk_deletion,
+            changes=changes,
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    upload_changed_objects(
+        s3_client,
+        canonical_dir=work_dir,
+        bucket=args.canonical_bucket,
+        prefix=prefix,
+        changes=changes,
+    )
+
+    put_response = s3_client.put_object(
+        Bucket=args.registry_bucket,
+        Key=manifest_key,
+        Body=json.dumps(release_manifest, ensure_ascii=False, indent=2).encode(),
+        ContentType="application/json",
+    )
+
+    payload = build_execution_input(
+        corpus_id=args.corpus_id,
+        release_id=release_id,
+        knowledge_base_id=args.knowledge_base_id,
+        data_source_id=args.data_source_id,
+        bucket=args.canonical_bucket,
+        prefix=prefix,
+        manifest_s3_uri=f"s3://{args.registry_bucket}/{manifest_key}",
+        manifest_s3_version_id=put_response["VersionId"],
+        previous_document_count=previous_document_count,
+        allow_bulk_deletion=args.allow_bulk_deletion,
+        changes=changes,
+    )
+
+    execution = stepfunctions.start_execution(
+        stateMachineArn=args.state_machine_arn,
+        name=release_id,
+        input=json.dumps(payload),
+    )
+    print(f"started {execution['executionArn']}")
+
+    while True:
+        described = stepfunctions.describe_execution(
+            executionArn=execution["executionArn"]
+        )
+        status = described["status"]
+        print(f"status: {status}")
+        if status != "RUNNING":
+            return 0 if status == "SUCCEEDED" else 1
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `pytest tests/unit/test_publish_input.py -v`
+
+Expected: 8 passed。
+
+- [ ] **Step 5: 运行全部单元测试**
+
+Run: `pytest tests/ -v`
+
+Expected: 全部 passed。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add cli tests/unit/test_publish_input.py
+git commit -m "Add local publish entrypoint
+
+Keep corpus preparation local so large scans are not bound by Lambda limits,
+and derive a distinct idempotency token per batch so a state machine retry
+replays rather than duplicates."
+```
+
+---
+
+## Task 15: CI 切换到 pytest 并更新文档
+
+**Files:**
+- Modify: `.github/workflows/repository-safety.yml`
+- Modify: `README.md`, `README.en.md`
+
+CI 当前跑 `python -m unittest discover`，且校验 `scripts/*.sh` 的 shellcheck 与
+`scripts/*.py` 的语法。删除若干脚本后这些通配仍然有效，但测试命令需要切换。
+
+- [ ] **Step 1: 修改 CI 工作流**
+
+编辑 `.github/workflows/repository-safety.yml`，将最后一步替换：
+
+```yaml
+      - name: Run unit tests
+        run: python -m pytest tests -v
+```
+
+在其后追加 CDK 校验步骤：
+
+```yaml
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install infrastructure dependencies
+        run: npm ci
+        working-directory: infra
+
+      - name: Run infrastructure tests
+        run: npx jest
+        working-directory: infra
+
+      - name: Synthesize all stacks
+        run: npx cdk synth --all
+        working-directory: infra
+        env:
+          CDK_DEFAULT_ACCOUNT: "123456789012"
+          CDK_DEFAULT_REGION: us-east-1
+```
+
+- [ ] **Step 2: 本地验证 CI 步骤**
+
+Run:
+
+```bash
+python -m pytest tests -v && \
+  (cd infra && npx jest && CDK_DEFAULT_ACCOUNT=123456789012 CDK_DEFAULT_REGION=us-east-1 npx cdk synth --all > /dev/null && echo SYNTH_OK)
+```
+
+Expected: 测试全绿并输出 `SYNTH_OK`。
+
+- [ ] **Step 3: 更新 README 中英文**
+
+两个 README 必须在同一次变更中同步修改，CI 会强制校验（`Require paired README changes`）。
+
+需要修改的内容：
+
+1. 第 2 节「快速开始」：删除 `./scripts/02_provision.sh`，替换为 CDK 部署命令。
+2. 第 3.4 节「企业 Markdown 增量摄入」：删除 `scripts/21`、`scripts/22` 命令，替换为
+   `cli/publish.py`。
+3. 第 8 节「已知限制」：删除"`scripts/21` 至 `23` 仍是研究实现"一条，改为说明发布状态机
+   已具备终态轮询、定向删除与原子 Promotion。
+4. 第 1 节结论表最后一行「当前更新 Pipeline 能否直接生产使用？」的答案需更新。
+
+`README.md` 第 2 节的新命令块：
+
+```bash
+cp config/test.env.example config/test.env
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+aws sts get-caller-identity
+
+cd infra && npm ci && npx cdk deploy --all && cd ..
+```
+
+`README.md` 第 3.4 节的新命令块：
+
+```bash
+.venv/bin/python -m cli.publish \
+  --source-dir examples/corpus \
+  --corpus-id demo \
+  --canonical-bucket "${CANONICAL_BUCKET}" \
+  --registry-bucket "${REGISTRY_BUCKET}" \
+  --knowledge-base-id "${KB_ID}" \
+  --data-source-id "${DATA_SOURCE_ID}" \
+  --state-machine-arn "${STATE_MACHINE_ARN}" \
+  --dry-run
+```
+
+`README.en.md` 对应位置作同样修改，命令块保持逐字一致（`scripts/13_check_readme_sync.py`
+会比较命令块）。
+
+- [ ] **Step 4: 校验 README 同步**
+
+Run: `python3 scripts/13_check_readme_sync.py`
+
+Expected: 通过，无输出或成功提示。
+
+- [ ] **Step 5: 运行仓库安全检查**
+
+Run: `./scripts/12_repository_safety_check.sh`
+
+Expected: 通过。若报告 `examples/corpus` 或 `infra` 下有可疑内容，检查是否误提交了账户
+ID、ARN 或凭证。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add .github/workflows/repository-safety.yml README.md README.en.md
+git commit -m "Switch CI to pytest and document the CDK-based workflow
+
+Add infrastructure tests and cdk synth to CI so a broken stack fails before
+review, and replace the retired provisioning and ingestion scripts in both
+READMEs."
+```
+
+---
+
+## Task 16: 端到端集成验收（调用真实 AWS）
+
+**Files:**
+- Create: `tests/integration/test_release_pipeline.md`（人工执行的验收清单）
+
+**本任务调用真实 AWS 并产生费用。** 四条路径对应 spec 第 10.3 节。这些是人工执行的验收
+步骤而非自动化测试——自动化跨账户集成测试属于 Sprint 5 范围。
+
+- [ ] **Step 1: 部署并记录输出**
+
+Run:
+
+```bash
+cd infra && npx cdk deploy --all --require-approval never --outputs-file /tmp/kb-outputs.json && cd ..
+cat /tmp/kb-outputs.json
+```
+
+将输出的桶名、KB ID、Data Source ID、状态机 ARN 导出为环境变量。
+
+- [ ] **Step 2: 路径一 —— 正常发布**
+
+Run:
+
+```bash
+.venv/bin/python -m cli.publish \
+  --source-dir examples/corpus --corpus-id demo \
+  --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
+  --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
+  --state-machine-arn "${STATE_MACHINE_ARN}" \
+  --source-commit "$(git rev-parse HEAD)"
+```
+
+Expected: 最终 `status: SUCCEEDED`。随后验证 Registry：
+
+```bash
+aws dynamodb get-item --table-name "${RELEASE_TABLE}" \
+  --key '{"pk":{"S":"CORPUS#demo"},"sk":{"S":"POINTER"}}'
+```
+
+Expected: `activeReleaseId` 为本次 releaseId，且该 Release 记录 `status` 为 `ACTIVE`。
+
+- [ ] **Step 3: 路径二 —— 损坏文档被阻断**
+
+制造一个门禁 A 会捕获的不一致：发布后直接从 canonical 桶删除一个 sidecar，再修改对应文档
+触发一次新发布。
+
+```bash
+aws s3 rm "s3://${CANONICAL_BUCKET}/canonical/demo/governance/retention-policy.md.metadata.json"
+printf '\n新增一行以触发变更。\n' >> examples/corpus/governance/retention-policy.md
+.venv/bin/python -m cli.publish --source-dir examples/corpus --corpus-id demo \
+  --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
+  --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
+  --state-machine-arn "${STATE_MACHINE_ARN}"
+```
+
+Expected: 退出码非零，执行状态 `FAILED`。
+
+**关键验证**：POINTER 未变。
+
+```bash
+aws dynamodb get-item --table-name "${RELEASE_TABLE}" \
+  --key '{"pk":{"S":"CORPUS#demo"},"sk":{"S":"POINTER"}}'
+```
+
+Expected: `activeReleaseId` 仍为路径二之前的值。
+
+恢复：`git checkout examples/corpus/governance/retention-policy.md`
+
+- [ ] **Step 4: 路径三 —— 超限删除硬失败**
+
+删除 8 篇文档（8/13 约 62%，超过 0.5 阈值）：
+
+```bash
+mkdir -p /tmp/reduced-corpus && cp -r examples/corpus/governance /tmp/reduced-corpus/
+cp -r examples/corpus/operations /tmp/reduced-corpus/
+.venv/bin/python -m cli.publish --source-dir /tmp/reduced-corpus --corpus-id demo \
+  --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
+  --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
+  --state-machine-arn "${STATE_MACHINE_ARN}"
+```
+
+Expected: `FAILED`，且执行历史显示在 `GateBChoice` 转向 `FailRelease`。
+
+**关键验证**：删除**未被执行**——KB 中原文档仍可检索，POINTER 未变。
+
+带覆盖参数重跑应成功：
+
+```bash
+.venv/bin/python -m cli.publish --source-dir /tmp/reduced-corpus --corpus-id demo \
+  --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
+  --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
+  --state-machine-arn "${STATE_MACHINE_ARN}" \
+  --allow-bulk-deletion
+```
+
+Expected: `SUCCEEDED`，POINTER 前进，被删文档检索返回空。
+
+- [ ] **Step 5: 路径四 —— 并发发布被条件写拒绝**
+
+同时发起两次执行（不同 releaseId，相同 expectedPrevious）：
+
+```bash
+.venv/bin/python -m cli.publish --source-dir examples/corpus --corpus-id demo \
+  --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
+  --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
+  --state-machine-arn "${STATE_MACHINE_ARN}" &
+sleep 2
+.venv/bin/python -m cli.publish --source-dir examples/corpus --corpus-id demo \
+  --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
+  --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
+  --state-machine-arn "${STATE_MACHINE_ARN}"
+wait
+```
+
+Expected: 恰好一个 `SUCCEEDED`，另一个 `FAILED`，失败原因含 `ConcurrentPromotionError`。
+POINTER 指向成功的那个 releaseId。
+
+若两次都成功，说明条件写未生效——这是必须修复的严重缺陷。
+
+- [ ] **Step 6: 记录验收结果**
+
+创建 `tests/integration/test_release_pipeline.md`，把上述五步与实际观测结果（执行 ARN、
+状态、POINTER 值）填入表格。不要记录账户 ID 或完整 ARN——按 `SECURITY.md` 要求脱敏。
+
+- [ ] **Step 7: 清理沙箱资源**
+
+```bash
+cd infra
+npx cdk destroy ManagedKbRelease --force
+# Stateful stacks have termination protection; disabling it is deliberate.
+aws cloudformation update-termination-protection \
+  --stack-name ManagedKbKnowledgeBase --no-enable-termination-protection
+npx cdk destroy ManagedKbKnowledgeBase --force
+aws cloudformation update-termination-protection \
+  --stack-name ManagedKbFoundation --no-enable-termination-protection
+npx cdk destroy ManagedKbFoundation --force
+```
+
+注意：桶与表设为 `RETAIN`，`cdk destroy` 后仍存在，需按需手动删除。这是设计意图——防止
+误操作销毁已发布内容。
+
+- [ ] **Step 8: 提交**
+
+```bash
+cd .. && git add tests/integration/test_release_pipeline.md
+git commit -m "Record end-to-end acceptance results
+
+Confirm that a blocked release leaves the active pointer untouched, that an
+over-threshold deletion fails before any document is removed, and that
+concurrent promotion is rejected by the conditional write."
+```
+
+---
+
+## Task 17: ADR 收尾
+
+**Files:**
+- Create: `docs/adr/ADR-001-execution-model.md`
+- Create: `docs/adr/ADR-002-stack-separation.md`
+- Create: `docs/adr/ADR-003-manifest-storage-split.md`
+- Create: `docs/adr/ADR-004-hard-fail-on-bulk-deletion.md`
+
+spec 第 12 节列了七条 ADR。ADR-005（仅 `INDEXED` 算成功）与 ADR-007（Data Source 不可打
+Tag）本质是 API 事实而非架构决策，已记录在 spec 第 2 节的事实表中，不再单独立 ADR。
+ADR-006 已在 Task 8 产出。
+
+- [ ] **Step 1: 撰写四份 ADR**
+
+每份使用统一结构：背景、决策、理由、后果、备选方案。以 ADR-004 为例：
+
+```markdown
+# ADR-004: 删除比例超限采取硬失败而非人工审批暂停
+
+- 状态：已接受
+- 日期：2026-08-17
+
+## 背景
+
+一次发布可能包含大比例删除。既可能是正常的语料重组，也可能是准备阶段的缺陷（例如源目录
+路径写错导致扫描到空目录）。需要一个机制阻止后者。
+
+## 决策
+
+删除比例超过阈值时状态机硬失败，不修改任何状态。操作者确认后携带
+`allowBulkDeletion=true` 重新发起执行。
+
+## 理由
+
+无需引入审批回调基础设施。审计痕迹即两次 execution 记录，天然可查。长时暂停会占用
+execution 生命周期，而 Standard 状态机的执行历史保留期有限。
+
+## 后果
+
+正面：实现简单，失败语义明确，两次执行的输入差异构成审批证据。
+
+负面：操作者需要重跑整个发布，包括已通过的门禁 A。对大语料而言这是几十秒的重复工作，
+可接受。
+
+## 备选方案
+
+Task Token 暂停加 SNS 通知：体验更好，但需要审批回调通道与超时处理，且暂停期间 execution
+一直活跃。本 Sprint 的参考实现定位不需要这一层。
+```
+
+其余三份按 spec 第 3 节（执行模型）、第 5.2 节（Stack 切分）、第 6.3 节（Manifest 存储
+分工）的内容撰写，理由与后果需与 spec 一致。
+
+- [ ] **Step 2: 提交**
+
+```bash
+git add docs/adr
+git commit -m "Record architecture decisions for Sprint 1
+
+Fold the two API-fact entries from the original list into the spec's verified
+facts table, since they document service behavior rather than a decision."
+```
+
+---
+
+## 完成检查
+
+对照 spec 第 11 节验收标准逐项确认：
+
+- [ ] 空沙箱账户可重复执行 `cdk deploy` 部署三个 Stack
+- [ ] `examples/corpus` 13 篇语料发布走完九步得到 `ACTIVE` Manifest
+- [ ] 四条集成路径行为符合预期，失败路径下 POINTER 未被修改
+- [ ] A1/A2 探针给出结论并记入 ADR-006
+- [ ] `pytest tests -v` 全部通过
+- [ ] `cd infra && npx jest` 全部通过
+- [ ] `npx cdk synth --all` 无未附理由的 cdk-nag 抑制项
+- [ ] `scripts/02_provision.sh`、`21`、`22`、`23` 已删除
+- [ ] README 中英文同步，`scripts/13_check_readme_sync.py` 通过
+- [ ] `./scripts/12_repository_safety_check.sh` 通过
+- [ ] CI 已切换至 pytest 且既有数据准备测试仍通过
