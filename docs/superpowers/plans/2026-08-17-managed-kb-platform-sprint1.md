@@ -1727,3 +1727,788 @@ Compute the deletion ratio against the pre-release document count, and treat
 every terminal status other than INDEXED as a failure so partially indexed
 content cannot reach promotion."
 ```
+
+---
+
+## Task 6: Registry 存储层与原子 Promotion
+
+**Files:**
+- Create: `kbp/registry/store.py`
+- Create: `tests/unit/test_registry_store.py`
+
+DynamoDB 条件写是并发安全的唯一保障。本任务用一个假 DynamoDB 客户端测试条件表达式的
+构造与冲突处理——不引入 moto，因为要断言的是"传给 API 的参数正确"而非"DynamoDB 行为
+正确"。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `tests/unit/test_registry_store.py`：
+
+```python
+import pytest
+
+from kbp.registry import store
+
+
+class FakeDynamoClient:
+    """Records calls and lets a test force a conditional-check failure."""
+
+    class exceptions:  # noqa: N801 - mirrors botocore client shape
+        class ConditionalCheckFailedException(Exception):
+            pass
+
+    def __init__(self, *, fail_condition: bool = False, existing_item: dict | None = None):
+        self.fail_condition = fail_condition
+        self.existing_item = existing_item
+        self.calls: list[tuple[str, dict]] = []
+
+    def put_item(self, **kwargs):
+        self.calls.append(("put_item", kwargs))
+        if self.fail_condition:
+            raise self.exceptions.ConditionalCheckFailedException("conditional failed")
+        return {}
+
+    def update_item(self, **kwargs):
+        self.calls.append(("update_item", kwargs))
+        if self.fail_condition:
+            raise self.exceptions.ConditionalCheckFailedException("conditional failed")
+        return {}
+
+    def get_item(self, **kwargs):
+        self.calls.append(("get_item", kwargs))
+        return {"Item": self.existing_item} if self.existing_item else {}
+
+
+def test_keys_are_namespaced_to_allow_multiple_corpora_later():
+    assert store.release_key("demo", "demo-20260817T101500Z-abcdef12") == {
+        "pk": {"S": "CORPUS#demo"},
+        "sk": {"S": "RELEASE#demo-20260817T101500Z-abcdef12"},
+    }
+    assert store.pointer_key("demo") == {
+        "pk": {"S": "CORPUS#demo"},
+        "sk": {"S": "POINTER"},
+    }
+
+
+def test_create_release_refuses_to_overwrite_an_existing_release_id():
+    client = FakeDynamoClient()
+
+    store.create_release(
+        client,
+        table_name="releases",
+        corpus_id="demo",
+        release_id="demo-20260817T101500Z-abcdef12",
+        manifest_s3_uri="s3://registry/manifests/demo/r1.json",
+        manifest_s3_version_id="v1",
+        parent_release_id=None,
+        execution_arn="arn:aws:states:us-east-1:1:execution:sm:exec",
+    )
+
+    _, kwargs = client.calls[0]
+    assert kwargs["ConditionExpression"] == "attribute_not_exists(pk)"
+    assert kwargs["Item"]["status"] == {"S": "PREPARING"}
+
+
+def test_read_active_pointer_returns_none_for_first_release():
+    client = FakeDynamoClient(existing_item=None)
+
+    assert store.read_active_release_id(client, table_name="releases", corpus_id="demo") is None
+
+
+def test_read_active_pointer_returns_current_release():
+    client = FakeDynamoClient(
+        existing_item={
+            "pk": {"S": "CORPUS#demo"},
+            "sk": {"S": "POINTER"},
+            "activeReleaseId": {"S": "demo-20260810T101500Z-99999999"},
+        }
+    )
+
+    assert (
+        store.read_active_release_id(client, table_name="releases", corpus_id="demo")
+        == "demo-20260810T101500Z-99999999"
+    )
+
+
+def test_promote_first_release_requires_absent_pointer():
+    client = FakeDynamoClient()
+
+    store.promote_release(
+        client,
+        table_name="releases",
+        corpus_id="demo",
+        release_id="demo-20260817T101500Z-abcdef12",
+        expected_previous_release_id=None,
+    )
+
+    update_calls = [kwargs for name, kwargs in client.calls if name == "update_item"]
+    pointer_call = next(
+        kwargs for kwargs in update_calls if kwargs["Key"] == store.pointer_key("demo")
+    )
+    assert pointer_call["ConditionExpression"] == "attribute_not_exists(activeReleaseId)"
+
+
+def test_promote_subsequent_release_pins_the_expected_previous_pointer():
+    client = FakeDynamoClient()
+
+    store.promote_release(
+        client,
+        table_name="releases",
+        corpus_id="demo",
+        release_id="demo-20260817T101500Z-abcdef12",
+        expected_previous_release_id="demo-20260810T101500Z-99999999",
+    )
+
+    pointer_call = next(
+        kwargs
+        for name, kwargs in client.calls
+        if name == "update_item" and kwargs["Key"] == store.pointer_key("demo")
+    )
+    assert (
+        pointer_call["ConditionExpression"]
+        == "attribute_not_exists(activeReleaseId) OR activeReleaseId = :expected"
+    )
+    assert pointer_call["ExpressionAttributeValues"][":expected"] == {
+        "S": "demo-20260810T101500Z-99999999"
+    }
+
+
+def test_concurrent_promotion_is_rejected_rather_than_silently_overwriting():
+    client = FakeDynamoClient(fail_condition=True)
+
+    with pytest.raises(store.ConcurrentPromotionError) as error:
+        store.promote_release(
+            client,
+            table_name="releases",
+            corpus_id="demo",
+            release_id="demo-20260817T101500Z-abcdef12",
+            expected_previous_release_id="demo-20260810T101500Z-99999999",
+        )
+
+    assert "demo-20260810T101500Z-99999999" in str(error.value)
+
+
+def test_promotion_supersedes_the_previous_release_record():
+    client = FakeDynamoClient()
+
+    store.promote_release(
+        client,
+        table_name="releases",
+        corpus_id="demo",
+        release_id="demo-20260817T101500Z-abcdef12",
+        expected_previous_release_id="demo-20260810T101500Z-99999999",
+    )
+
+    superseded = next(
+        kwargs
+        for name, kwargs in client.calls
+        if name == "update_item"
+        and kwargs["Key"]
+        == store.release_key("demo", "demo-20260810T101500Z-99999999")
+    )
+    assert superseded["ExpressionAttributeValues"][":status"] == {"S": "SUPERSEDED"}
+
+
+def test_pointer_is_updated_after_the_release_record_is_marked_active():
+    """Ordering matters: a reader following the pointer must find an ACTIVE record."""
+    client = FakeDynamoClient()
+
+    store.promote_release(
+        client,
+        table_name="releases",
+        corpus_id="demo",
+        release_id="demo-20260817T101500Z-abcdef12",
+        expected_previous_release_id=None,
+    )
+
+    keys_in_order = [kwargs["Key"] for _, kwargs in client.calls]
+    active_index = keys_in_order.index(
+        store.release_key("demo", "demo-20260817T101500Z-abcdef12")
+    )
+    pointer_index = keys_in_order.index(store.pointer_key("demo"))
+    assert active_index < pointer_index
+
+
+def test_fail_release_never_touches_the_pointer():
+    client = FakeDynamoClient()
+
+    store.fail_release(
+        client,
+        table_name="releases",
+        corpus_id="demo",
+        release_id="demo-20260817T101500Z-abcdef12",
+        reason="gate A failed: sidecar missing",
+    )
+
+    touched_keys = [kwargs["Key"] for _, kwargs in client.calls]
+    assert store.pointer_key("demo") not in touched_keys
+    assert client.calls[0][1]["ExpressionAttributeValues"][":status"] == {"S": "FAILED"}
+
+
+def test_advance_status_records_the_new_state():
+    client = FakeDynamoClient()
+
+    store.advance_status(
+        client,
+        table_name="releases",
+        corpus_id="demo",
+        release_id="demo-20260817T101500Z-abcdef12",
+        status="INGESTING",
+    )
+
+    _, kwargs = client.calls[0]
+    assert kwargs["ExpressionAttributeValues"][":status"] == {"S": "INGESTING"}
+
+
+def test_unknown_status_is_rejected():
+    client = FakeDynamoClient()
+
+    with pytest.raises(ValueError, match="unknown release status"):
+        store.advance_status(
+            client,
+            table_name="releases",
+            corpus_id="demo",
+            release_id="demo-20260817T101500Z-abcdef12",
+            status="ALMOST_DONE",
+        )
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `pytest tests/unit/test_registry_store.py -v`
+
+Expected: FAIL —— `ImportError: cannot import name 'store' from 'kbp.registry'`。
+
+- [ ] **Step 3: 实现 store.py**
+
+创建 `kbp/registry/store.py`：
+
+```python
+"""Release registry persistence: DynamoDB state and pointer, S3 manifests.
+
+DynamoDB owns release status and the active pointer. S3 owns manifest content.
+This split means a deleted table still leaves every published manifest
+recoverable from the versioned bucket.
+"""
+
+VALID_STATUSES = frozenset(
+    {"PREPARING", "INGESTING", "TESTING", "ACTIVE", "SUPERSEDED", "FAILED"}
+)
+
+
+class ConcurrentPromotionError(RuntimeError):
+    """Raised when the active pointer moved while this release was in flight."""
+
+
+def release_key(corpus_id: str, release_id: str) -> dict:
+    return {"pk": {"S": f"CORPUS#{corpus_id}"}, "sk": {"S": f"RELEASE#{release_id}"}}
+
+
+def pointer_key(corpus_id: str) -> dict:
+    return {"pk": {"S": f"CORPUS#{corpus_id}"}, "sk": {"S": "POINTER"}}
+
+
+def create_release(
+    client,
+    *,
+    table_name: str,
+    corpus_id: str,
+    release_id: str,
+    manifest_s3_uri: str,
+    manifest_s3_version_id: str,
+    parent_release_id: str | None,
+    execution_arn: str,
+) -> None:
+    """Create the release record, refusing to overwrite an existing releaseId."""
+    item = {
+        **release_key(corpus_id, release_id),
+        "corpusId": {"S": corpus_id},
+        "releaseId": {"S": release_id},
+        "status": {"S": "PREPARING"},
+        "manifestS3Uri": {"S": manifest_s3_uri},
+        "manifestS3VersionId": {"S": manifest_s3_version_id},
+        "executionArn": {"S": execution_arn},
+        "parentReleaseId": (
+            {"S": parent_release_id} if parent_release_id else {"NULL": True}
+        ),
+    }
+    client.put_item(
+        TableName=table_name,
+        Item=item,
+        ConditionExpression="attribute_not_exists(pk)",
+    )
+
+
+def read_active_release_id(client, *, table_name: str, corpus_id: str) -> str | None:
+    """Read the currently active releaseId, or None before the first release."""
+    response = client.get_item(
+        TableName=table_name, Key=pointer_key(corpus_id), ConsistentRead=True
+    )
+    item = response.get("Item")
+    if not item:
+        return None
+    return item["activeReleaseId"]["S"]
+
+
+def advance_status(
+    client, *, table_name: str, corpus_id: str, release_id: str, status: str
+) -> None:
+    if status not in VALID_STATUSES:
+        raise ValueError(f"unknown release status: {status}")
+    client.update_item(
+        TableName=table_name,
+        Key=release_key(corpus_id, release_id),
+        UpdateExpression="SET #status = :status",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":status": {"S": status}},
+    )
+
+
+def fail_release(
+    client, *, table_name: str, corpus_id: str, release_id: str, reason: str
+) -> None:
+    """Mark a release FAILED. Deliberately never touches the pointer."""
+    client.update_item(
+        TableName=table_name,
+        Key=release_key(corpus_id, release_id),
+        UpdateExpression="SET #status = :status, failureReason = :reason",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={
+            ":status": {"S": "FAILED"},
+            ":reason": {"S": reason},
+        },
+    )
+
+
+def promote_release(
+    client,
+    *,
+    table_name: str,
+    corpus_id: str,
+    release_id: str,
+    expected_previous_release_id: str | None,
+) -> None:
+    """Atomically make this release active.
+
+    The release record is marked ACTIVE before the pointer moves, so a reader
+    that follows the pointer always finds an ACTIVE record. The conditional
+    write on the pointer rejects a concurrent pipeline instead of overwriting it.
+    """
+    advance_status(
+        client,
+        table_name=table_name,
+        corpus_id=corpus_id,
+        release_id=release_id,
+        status="ACTIVE",
+    )
+
+    if expected_previous_release_id:
+        advance_status(
+            client,
+            table_name=table_name,
+            corpus_id=corpus_id,
+            release_id=expected_previous_release_id,
+            status="SUPERSEDED",
+        )
+        condition = (
+            "attribute_not_exists(activeReleaseId) OR activeReleaseId = :expected"
+        )
+        values = {
+            ":active": {"S": release_id},
+            ":expected": {"S": expected_previous_release_id},
+        }
+    else:
+        condition = "attribute_not_exists(activeReleaseId)"
+        values = {":active": {"S": release_id}}
+
+    try:
+        client.update_item(
+            TableName=table_name,
+            Key=pointer_key(corpus_id),
+            UpdateExpression="SET activeReleaseId = :active",
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+    except client.exceptions.ConditionalCheckFailedException as error:
+        raise ConcurrentPromotionError(
+            f"active pointer for {corpus_id} is no longer "
+            f"{expected_previous_release_id}; another release won the race"
+        ) from error
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `pytest tests/unit/test_registry_store.py -v`
+
+Expected: 12 passed。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add kbp/registry/store.py tests/unit/test_registry_store.py
+git commit -m "Add release registry persistence with atomic promotion
+
+Pin the pointer update to the release the execution observed at start, so a
+concurrent pipeline is rejected rather than silently overwritten, and mark the
+release ACTIVE before moving the pointer so pointer followers never land on a
+non-active record."
+```
+
+---
+
+## Task 7: Lambda handlers
+
+**Files:**
+- Create: `kbp/ingestion/handlers/__init__.py`
+- Create: `kbp/ingestion/handlers/verify_s3.py`
+- Create: `kbp/ingestion/handlers/check_gates.py`
+- Create: `kbp/ingestion/handlers/registry_ops.py`
+- Create: `tests/unit/test_handlers.py`
+
+handler 必须保持极薄：取事件、调 AWS、交纯函数、返回结果。任何判定逻辑出现在 handler
+里就是设计错误——它会变成不可测的部分。
+
+- [ ] **Step 1: 写失败测试**
+
+创建 `tests/unit/test_handlers.py`：
+
+```python
+import pytest
+
+from kbp.ingestion.handlers import check_gates, registry_ops, verify_s3
+
+
+class FakeS3Client:
+    def __init__(self, objects: dict[str, str]):
+        self.objects = objects
+
+    def head_object(self, *, Bucket, Key):  # noqa: N803 - boto3 casing
+        suffix = Key.split("canonical/demo/", 1)[-1]
+        if suffix not in self.objects:
+            raise self.exceptions.ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        return {"Metadata": {"sha256": self.objects[suffix]}}
+
+    class exceptions:  # noqa: N801
+        class ClientError(Exception):
+            def __init__(self, response, operation):
+                super().__init__(operation)
+                self.response = response
+
+
+def test_verify_s3_handler_reports_missing_sidecar():
+    client = FakeS3Client({"doc.md": "a" * 64})
+
+    result = verify_s3.evaluate(
+        client=client,
+        bucket="canonical",
+        prefix="canonical/demo",
+        upserts=[
+            {"file": "doc.md", "contentSha256": "a" * 64, "metadataSha256": "b" * 64}
+        ],
+        deletions=[],
+    )
+
+    assert result["passed"] is False
+    assert "doc.md.metadata.json" in result["missing"]
+
+
+def test_verify_s3_handler_flags_surviving_deletion():
+    client = FakeS3Client({"gone.md": "a" * 64})
+
+    result = verify_s3.evaluate(
+        client=client,
+        bucket="canonical",
+        prefix="canonical/demo",
+        upserts=[],
+        deletions=[{"file": "gone.md"}],
+    )
+
+    assert result["passed"] is False
+    assert result["surviving"] == ["gone.md"]
+
+
+def test_verify_s3_handler_passes_on_consistent_state():
+    client = FakeS3Client({"doc.md": "a" * 64, "doc.md.metadata.json": "b" * 64})
+
+    result = verify_s3.evaluate(
+        client=client,
+        bucket="canonical",
+        prefix="canonical/demo",
+        upserts=[
+            {"file": "doc.md", "contentSha256": "a" * 64, "metadataSha256": "b" * 64}
+        ],
+        deletions=[],
+    )
+
+    assert result["passed"] is True
+
+
+def test_check_gates_deletion_ratio_uses_previous_count_from_event():
+    event = {
+        "gate": "deletionRatio",
+        "deletedCount": 30,
+        "previousDocumentCount": 50,
+        "threshold": 0.5,
+        "allowBulkDeletion": False,
+    }
+
+    result = check_gates.handler(event, None)
+
+    assert result["passed"] is False
+    assert result["ratio"] == pytest.approx(0.6)
+
+
+def test_check_gates_aggregates_ingest_statuses():
+    event = {
+        "gate": "ingestStatus",
+        "documentDetails": [
+            {"identifier": {"s3": {"uri": "s3://b/doc-1.md"}}, "status": "INDEXED"},
+            {
+                "identifier": {"s3": {"uri": "s3://b/doc-2.md"}},
+                "status": "PARTIALLY_INDEXED",
+            },
+        ],
+    }
+
+    result = check_gates.handler(event, None)
+
+    assert result["settled"] is True
+    assert result["passed"] is False
+    assert result["failures"][0]["status"] == "PARTIALLY_INDEXED"
+
+
+def test_check_gates_normalizes_s3_identifier_to_uri_string():
+    """The SDK returns a nested identifier; gates work on plain strings."""
+    event = {
+        "gate": "ingestStatus",
+        "documentDetails": [
+            {"identifier": {"s3": {"uri": "s3://b/doc-1.md"}}, "status": "FAILED"}
+        ],
+    }
+
+    result = check_gates.handler(event, None)
+
+    assert result["failures"][0]["identifier"] == "s3://b/doc-1.md"
+
+
+def test_check_gates_rejects_unknown_gate_name():
+    with pytest.raises(ValueError, match="unknown gate"):
+        check_gates.handler({"gate": "vibes"}, None)
+
+
+def test_registry_ops_rejects_unknown_action():
+    with pytest.raises(ValueError, match="unknown action"):
+        registry_ops.handler({"action": "improvise"}, None)
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `pytest tests/unit/test_handlers.py -v`
+
+Expected: FAIL —— `ModuleNotFoundError: No module named 'kbp.ingestion.handlers'`。
+
+- [ ] **Step 3: 实现三个 handler**
+
+创建 `kbp/ingestion/handlers/__init__.py`（空文件）。
+
+创建 `kbp/ingestion/handlers/verify_s3.py`：
+
+```python
+"""Gate A: verify canonical objects match the manifest before ingestion."""
+
+import os
+
+import boto3
+
+from kbp.ingestion import gates
+
+
+def _object_sha256(client, *, bucket: str, prefix: str, file: str) -> str | None:
+    """Return the recorded SHA-256 for an object, or None when it is absent."""
+    try:
+        response = client.head_object(Bucket=bucket, Key=f"{prefix.strip('/')}/{file}")
+    except client.exceptions.ClientError as error:
+        if error.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return None
+        raise
+    return response["Metadata"]["sha256"]
+
+
+def evaluate(*, client, bucket: str, prefix: str, upserts: list, deletions: list) -> dict:
+    observed = {}
+    for item in upserts:
+        for file in (item["file"], f"{item['file']}.metadata.json"):
+            digest = _object_sha256(client, bucket=bucket, prefix=prefix, file=file)
+            if digest is not None:
+                observed[file] = digest
+
+    surviving = [
+        item["file"]
+        for item in deletions
+        if _object_sha256(client, bucket=bucket, prefix=prefix, file=item["file"])
+        is not None
+    ]
+
+    return gates.evaluate_s3_consistency(
+        expected_upserts=upserts,
+        observed_objects=observed,
+        expected_deletions=deletions,
+        surviving_deletions=surviving,
+    )
+
+
+def handler(event, _context):
+    return evaluate(
+        client=boto3.client("s3"),
+        bucket=os.environ["CANONICAL_BUCKET"],
+        prefix=event["prefix"],
+        upserts=event["upserts"],
+        deletions=event["deletions"],
+    )
+```
+
+创建 `kbp/ingestion/handlers/check_gates.py`：
+
+```python
+"""Gates B, C and D: evaluate release gates from state machine input."""
+
+from kbp.ingestion import gates
+
+
+def _identifier_to_string(identifier: dict | str) -> str:
+    """Flatten the SDK's nested document identifier into a plain string."""
+    if isinstance(identifier, str):
+        return identifier
+    if "s3" in identifier:
+        return identifier["s3"]["uri"]
+    return identifier["custom"]["id"]
+
+
+def _normalize_details(details: list[dict]) -> list[dict]:
+    return [
+        {
+            "identifier": _identifier_to_string(item["identifier"]),
+            "status": item["status"],
+        }
+        for item in details
+    ]
+
+
+def handler(event, _context):
+    gate = event.get("gate")
+
+    if gate == "deletionRatio":
+        return gates.evaluate_deletion_ratio(
+            deleted_count=event["deletedCount"],
+            previous_document_count=event["previousDocumentCount"],
+            threshold=event["threshold"],
+            allow_bulk_deletion=event.get("allowBulkDeletion", False),
+        )
+
+    if gate == "ingestStatus":
+        return gates.evaluate_ingest_statuses(
+            _normalize_details(event["documentDetails"])
+        )
+
+    if gate == "deleteStatus":
+        return gates.evaluate_delete_statuses(
+            _normalize_details(event["documentDetails"])
+        )
+
+    if gate == "smokeRetrieval":
+        return gates.evaluate_smoke_retrieval(
+            expectation=event["expectation"],
+            retrieved_document_ids=event["retrievedDocumentIds"],
+            target=event["target"],
+        )
+
+    raise ValueError(f"unknown gate: {gate}")
+```
+
+创建 `kbp/ingestion/handlers/registry_ops.py`：
+
+```python
+"""Registry reads, status transitions and atomic promotion."""
+
+import os
+
+import boto3
+
+from kbp.registry import store
+
+
+def handler(event, _context):
+    client = boto3.client("dynamodb")
+    table_name = os.environ["RELEASE_TABLE"]
+    action = event.get("action")
+    corpus_id = event.get("corpusId")
+
+    if action == "readPointer":
+        return {
+            "activeReleaseId": store.read_active_release_id(
+                client, table_name=table_name, corpus_id=corpus_id
+            )
+        }
+
+    if action == "createRelease":
+        store.create_release(
+            client,
+            table_name=table_name,
+            corpus_id=corpus_id,
+            release_id=event["releaseId"],
+            manifest_s3_uri=event["manifestS3Uri"],
+            manifest_s3_version_id=event["manifestS3VersionId"],
+            parent_release_id=event.get("parentReleaseId"),
+            execution_arn=event["executionArn"],
+        )
+        return {"status": "PREPARING"}
+
+    if action == "advanceStatus":
+        store.advance_status(
+            client,
+            table_name=table_name,
+            corpus_id=corpus_id,
+            release_id=event["releaseId"],
+            status=event["status"],
+        )
+        return {"status": event["status"]}
+
+    if action == "promote":
+        store.promote_release(
+            client,
+            table_name=table_name,
+            corpus_id=corpus_id,
+            release_id=event["releaseId"],
+            expected_previous_release_id=event.get("expectedPreviousReleaseId"),
+        )
+        return {"status": "ACTIVE"}
+
+    if action == "fail":
+        store.fail_release(
+            client,
+            table_name=table_name,
+            corpus_id=corpus_id,
+            release_id=event["releaseId"],
+            reason=event["reason"],
+        )
+        return {"status": "FAILED"}
+
+    raise ValueError(f"unknown action: {action}")
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `pytest tests/unit/test_handlers.py -v`
+
+Expected: 8 passed。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add kbp/ingestion/handlers tests/unit/test_handlers.py
+git commit -m "Add Lambda handlers as thin adapters over the gate functions
+
+Keep every decision in the pure functions so handler code stays limited to
+fetching state and shaping payloads, and flatten the SDK's nested document
+identifier at the boundary."
+```
