@@ -4821,6 +4821,31 @@ def test_empty_change_set_produces_no_batches():
     assert payload["ingestBatches"] == []
     assert payload["deleteBatches"] == []
     assert payload["changeCounts"] == {"added": 0, "modified": 0, "deleted": 0}
+
+
+def test_uploaded_version_ids_land_on_the_manifest():
+    """Without this the rollback slot stays null and rollback is not version-exact."""
+    corpus_manifest = {
+        "corpusId": "demo",
+        "documents": [document("a"), document("b")],
+    }
+
+    result = publish.apply_version_ids(corpus_manifest, {"a.md": "ver-a"})
+
+    versions = {item["file"]: item["s3VersionId"] for item in result["documents"]}
+    assert versions["a.md"] == "ver-a"
+    assert versions["b.md"] is None
+
+
+def test_carried_forward_version_is_preserved_for_untouched_documents():
+    corpus_manifest = {
+        "corpusId": "demo",
+        "documents": [{**document("b"), "s3VersionId": "ver-old"}],
+    }
+
+    result = publish.apply_version_ids(corpus_manifest, {"a.md": "ver-a"})
+
+    assert result["documents"][0]["s3VersionId"] == "ver-old"
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -4852,7 +4877,7 @@ import sys
 import time
 from pathlib import Path
 
-from kbp.ingestion import batching
+from kbp.ingestion import batching, gates
 from kbp.preparation import corpus, diff
 from kbp.registry import manifest as manifest_module
 
@@ -4949,27 +4974,51 @@ def build_execution_input(
 
 def upload_changed_objects(
     s3_client, *, canonical_dir: Path, bucket: str, prefix: str, changes: dict
-) -> None:
-    """Upload changed objects and sidecars, and remove deleted ones.
+) -> dict[str, str]:
+    """Upload changed objects and sidecars, remove deleted ones.
 
     Writing to S3 before direct ingestion is enforced unconditionally; see
     ADR-006 for why this holds regardless of the A2 outcome.
+
+    Returns a file-to-version-id map so the manifest can record the exact object
+    version this release published, which is what makes a later rollback
+    version-exact rather than approximate.
     """
+    version_ids: dict[str, str] = {}
+
     for item in changes["added"] + changes["modified"]:
         for relative in (item["file"], f"{item['file']}.metadata.json"):
             body = (canonical_dir / relative).read_bytes()
-            s3_client.put_object(
+            response = s3_client.put_object(
                 Bucket=bucket,
                 Key=f"{prefix.strip('/')}/{relative}",
                 Body=body,
                 Metadata={"sha256": hashlib.sha256(body).hexdigest()},
             )
+            version_ids[relative] = response["VersionId"]
 
     for item in changes["deleted"]:
         for relative in (item["file"], f"{item['file']}.metadata.json"):
             s3_client.delete_object(
                 Bucket=bucket, Key=f"{prefix.strip('/')}/{relative}"
             )
+
+    return version_ids
+
+
+def apply_version_ids(corpus_manifest: dict, version_ids: dict[str, str]) -> dict:
+    """Record the uploaded object versions on the manifest documents.
+
+    Unchanged documents keep the version recorded by an earlier release, which is
+    carried forward by the caller.
+    """
+    return {
+        **corpus_manifest,
+        "documents": [
+            {**item, "s3VersionId": version_ids.get(item["file"], item.get("s3VersionId"))}
+            for item in corpus_manifest["documents"]
+        ],
+    }
 
 
 def main() -> int:
@@ -4981,6 +5030,11 @@ def main() -> int:
     parser.add_argument("--knowledge-base-id", required=True)
     parser.add_argument("--data-source-id", required=True)
     parser.add_argument("--state-machine-arn", required=True)
+    parser.add_argument(
+        "--release-table",
+        required=True,
+        help="Release table name, taken from the ReleaseTableName stack output.",
+    )
     parser.add_argument("--source-commit", default="unknown")
     parser.add_argument(
         "--allow-bulk-deletion",
@@ -5012,9 +5066,10 @@ def main() -> int:
 
     from kbp.registry import store
 
-    table_name = args.corpus_id + "-releases"
+    # The table name comes from the stack output rather than being derived, because
+    # CloudFormation generates it and any guessed name fails at runtime.
     active_release_id = store.read_active_release_id(
-        dynamodb, table_name=table_name, corpus_id=args.corpus_id
+        dynamodb, table_name=args.release_table, corpus_id=args.corpus_id
     )
 
     previous_manifest = None
@@ -5030,21 +5085,21 @@ def main() -> int:
         previous_manifest["documentCount"] if previous_manifest else 0
     )
 
+    # Report a no-op locally so the operator gets an immediate answer instead of
+    # waiting on an execution that would exit at its first Choice state.
+    if gates.is_empty_change_set(changes):
+        print("no changes detected; nothing to publish")
+        return 0
+
     timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     release_id = manifest_module.build_release_id(
         corpus_id=args.corpus_id,
         timestamp=timestamp,
         corpus_sha256=current["corpusSha256"],
     )
-    release_manifest = manifest_module.build_release_manifest(
-        release_id=release_id,
-        parent_release_id=active_release_id,
-        corpus_manifest=current,
-        change_counts={name: len(items) for name, items in changes.items()},
-        source_commit=args.source_commit,
-    )
-
+    change_counts = {name: len(items) for name, items in changes.items()}
     manifest_key = f"manifests/{args.corpus_id}/{release_id}.json"
+
     if args.dry_run:
         payload = build_execution_input(
             corpus_id=args.corpus_id,
@@ -5062,12 +5117,26 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    upload_changed_objects(
+    version_ids = upload_changed_objects(
         s3_client,
         canonical_dir=work_dir,
         bucket=args.canonical_bucket,
         prefix=prefix,
         changes=changes,
+    )
+
+    # Carry forward versions for documents this release did not touch.
+    if previous_manifest:
+        for item in previous_manifest["documents"]:
+            version_ids.setdefault(item["file"], item.get("s3VersionId"))
+
+    # The manifest is built after upload so it records real object versions.
+    release_manifest = manifest_module.build_release_manifest(
+        release_id=release_id,
+        parent_release_id=active_release_id,
+        corpus_manifest=apply_version_ids(current, version_ids),
+        change_counts=change_counts,
+        source_commit=args.source_commit,
     )
 
     put_response = s3_client.put_object(
@@ -5117,7 +5186,7 @@ if __name__ == "__main__":
 
 Run: `pytest tests/unit/test_publish_input.py -v`
 
-Expected: 8 passed。
+Expected: 10 passed。
 
 - [ ] **Step 5: 运行全部单元测试**
 
@@ -5228,6 +5297,7 @@ cd infra && npm ci && npx cdk deploy --all && cd ..
   --knowledge-base-id "${KB_ID}" \
   --data-source-id "${DATA_SOURCE_ID}" \
   --state-machine-arn "${STATE_MACHINE_ARN}" \
+  --release-table "${RELEASE_TABLE}" \
   --dry-run
 ```
 
@@ -5289,6 +5359,7 @@ Run:
   --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
   --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
   --state-machine-arn "${STATE_MACHINE_ARN}" \
+  --release-table "${RELEASE_TABLE}" \
   --source-commit "$(git rev-parse HEAD)"
 ```
 
@@ -5312,7 +5383,7 @@ printf '\n新增一行以触发变更。\n' >> examples/corpus/governance/retent
 .venv/bin/python -m cli.publish --source-dir examples/corpus --corpus-id demo \
   --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
   --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
-  --state-machine-arn "${STATE_MACHINE_ARN}"
+  --state-machine-arn "${STATE_MACHINE_ARN}" --release-table "${RELEASE_TABLE}"
 ```
 
 Expected: 退出码非零，执行状态 `FAILED`。
@@ -5338,7 +5409,7 @@ cp -r examples/corpus/operations /tmp/reduced-corpus/
 .venv/bin/python -m cli.publish --source-dir /tmp/reduced-corpus --corpus-id demo \
   --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
   --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
-  --state-machine-arn "${STATE_MACHINE_ARN}"
+  --state-machine-arn "${STATE_MACHINE_ARN}" --release-table "${RELEASE_TABLE}"
 ```
 
 Expected: `FAILED`，且执行历史显示在 `GateBChoice` 转向 `FailRelease`。
@@ -5352,6 +5423,7 @@ Expected: `FAILED`，且执行历史显示在 `GateBChoice` 转向 `FailRelease`
   --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
   --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
   --state-machine-arn "${STATE_MACHINE_ARN}" \
+  --release-table "${RELEASE_TABLE}" \
   --allow-bulk-deletion
 ```
 
@@ -5365,12 +5437,12 @@ Expected: `SUCCEEDED`，POINTER 前进，被删文档检索返回空。
 .venv/bin/python -m cli.publish --source-dir examples/corpus --corpus-id demo \
   --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
   --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
-  --state-machine-arn "${STATE_MACHINE_ARN}" &
+  --state-machine-arn "${STATE_MACHINE_ARN}" --release-table "${RELEASE_TABLE}" &
 sleep 2
 .venv/bin/python -m cli.publish --source-dir examples/corpus --corpus-id demo \
   --canonical-bucket "${CANONICAL_BUCKET}" --registry-bucket "${REGISTRY_BUCKET}" \
   --knowledge-base-id "${KB_ID}" --data-source-id "${DATA_SOURCE_ID}" \
-  --state-machine-arn "${STATE_MACHINE_ARN}"
+  --state-machine-arn "${STATE_MACHINE_ARN}" --release-table "${RELEASE_TABLE}"
 wait
 ```
 
