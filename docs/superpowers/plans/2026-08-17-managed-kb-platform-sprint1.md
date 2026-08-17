@@ -2512,3 +2512,344 @@ Keep every decision in the pure functions so handler code stays limited to
 fetching state and shaping payloads, and flatten the SDK's nested document
 identifier at the boundary."
 ```
+
+---
+
+## Task 8: A1/A2 假设探针（调用真实 AWS）
+
+**Files:**
+- Create: `kbp/probes/__init__.py`
+- Create: `kbp/probes/assumptions.py`
+- Create: `tests/unit/test_probes.py`
+- Create: `docs/adr/ADR-006-assumption-probe-results.md`
+- Delete: `scripts/23_verify_assumptions.sh`
+
+**本任务调用真实 AWS 并产生费用。** 需要一个已存在的 Managed KB。若 CDK Stack 尚未部署，
+可先跳到 Task 9–11 部署基础设施，再回到本任务——但探针必须在 Task 13 状态机接线**之前**
+完成，因为结论会写入 ADR 并影响后续对账通道设计。
+
+现有 `scripts/23_verify_assumptions.sh` 有三处错误使其结果不可用：A1 对同一个 Data
+Source 连续提交 Job（混淆并发限制与速率限制）；A2 用 `CUSTOM` payload 测试 S3 型 Data
+Source；查询用了 `vectorSearchConfiguration`（Managed KB 需要 `managedSearchConfiguration`，
+错误被吞成零命中）。
+
+- [ ] **Step 1: 写失败测试**
+
+探针的可测部分是"结果如何判定假设成立"，这部分是纯函数。创建 `tests/unit/test_probes.py`：
+
+```python
+import pytest
+
+from kbp.probes import assumptions
+
+
+def test_a1_is_refuted_when_rapid_submissions_all_succeed():
+    result = assumptions.interpret_a1(
+        [
+            {"intervalSeconds": 0.5, "throttled": False},
+            {"intervalSeconds": 0.5, "throttled": False},
+            {"intervalSeconds": 0.5, "throttled": False},
+        ]
+    )
+
+    assert result["holds"] is False
+    assert "no throttling" in result["conclusion"]
+
+
+def test_a1_holds_when_submissions_are_throttled():
+    result = assumptions.interpret_a1(
+        [
+            {"intervalSeconds": 0.5, "throttled": False},
+            {"intervalSeconds": 0.5, "throttled": True},
+            {"intervalSeconds": 0.5, "throttled": True},
+        ]
+    )
+
+    assert result["holds"] is True
+    assert result["throttledCount"] == 2
+
+
+def test_a1_requires_distinct_data_sources_to_be_valid():
+    """Submitting to one data source measures concurrency, not rate."""
+    with pytest.raises(ValueError, match="distinct data sources"):
+        assumptions.interpret_a1(
+            [
+                {"intervalSeconds": 0.5, "throttled": False, "dataSourceId": "ds-1"},
+                {"intervalSeconds": 0.5, "throttled": False, "dataSourceId": "ds-1"},
+            ],
+            require_distinct_data_sources=True,
+        )
+
+
+def test_a2_holds_when_probe_document_disappears_after_sync():
+    result = assumptions.interpret_a2(
+        retrievable_before_sync=True, retrievable_after_sync=False
+    )
+
+    assert result["holds"] is True
+    assert "removes" in result["conclusion"]
+
+
+def test_a2_is_refuted_when_probe_document_survives_sync():
+    result = assumptions.interpret_a2(
+        retrievable_before_sync=True, retrievable_after_sync=True
+    )
+
+    assert result["holds"] is False
+
+
+def test_a2_is_inconclusive_when_probe_never_became_retrievable():
+    """Without a retrievable baseline the post-sync observation proves nothing."""
+    result = assumptions.interpret_a2(
+        retrievable_before_sync=False, retrievable_after_sync=False
+    )
+
+    assert result["holds"] is None
+    assert "inconclusive" in result["conclusion"]
+
+
+def test_managed_search_configuration_is_used_for_retrieval():
+    """Managed KB requires managedSearchConfiguration; the vector variant
+    silently returns zero hits and was a defect in the previous probe."""
+    request = assumptions.build_probe_retrieve_request(
+        knowledge_base_id="KB123", query="probe", document_id="probe-doc"
+    )
+
+    assert "managedSearchConfiguration" in request["retrievalConfiguration"]
+    assert "vectorSearchConfiguration" not in request["retrievalConfiguration"]
+    filter_clause = request["retrievalConfiguration"]["managedSearchConfiguration"][
+        "filter"
+    ]
+    assert filter_clause == {
+        "equals": {"key": "document_id", "value": "probe-doc"}
+    }
+
+
+def test_probe_ingest_payload_uses_s3_not_custom_for_s3_data_sources():
+    """The previous probe sent a CUSTOM payload to an S3 data source."""
+    payload = assumptions.build_probe_ingest_payload(
+        bucket="bucket", key="outside-prefix/probe.md"
+    )
+
+    assert payload["content"]["dataSourceType"] == "S3"
+    assert "custom" not in payload["content"]
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `pytest tests/unit/test_probes.py -v`
+
+Expected: FAIL —— `ModuleNotFoundError: No module named 'kbp.probes'`。
+
+- [ ] **Step 3: 实现 assumptions.py**
+
+创建 `kbp/probes/__init__.py`（空文件）。
+
+创建 `kbp/probes/assumptions.py`：
+
+```python
+"""Probes for the two unverified assumptions that shape ingestion design.
+
+A1: does StartIngestionJob enforce 0.1 rps on managed knowledge bases?
+A2: does a reconciliation sync remove documents that exist only in the index?
+
+The interpret_* functions are pure so the decision rules can be tested without
+AWS. The run_* functions perform the measurements.
+"""
+
+import time
+
+
+def build_probe_retrieve_request(
+    *, knowledge_base_id: str, query: str, document_id: str
+) -> dict:
+    """Build a Retrieve request scoped to one probe document.
+
+    Managed knowledge bases require managedSearchConfiguration. Using
+    vectorSearchConfiguration produces a silent zero-hit result rather than an
+    error, which previously masked a broken probe.
+    """
+    return {
+        "knowledgeBaseId": knowledge_base_id,
+        "retrievalQuery": {"text": query},
+        "retrievalConfiguration": {
+            "managedSearchConfiguration": {
+                "numberOfResults": 10,
+                "filter": {"equals": {"key": "document_id", "value": document_id}},
+            }
+        },
+    }
+
+
+def build_probe_ingest_payload(*, bucket: str, key: str) -> dict:
+    """Build an ingest entry for an S3-type data source.
+
+    S3 data sources accept only S3 locations; inline CUSTOM content is rejected.
+    """
+    return {
+        "content": {
+            "dataSourceType": "S3",
+            "s3": {"s3Location": {"uri": f"s3://{bucket}/{key}"}},
+        }
+    }
+
+
+def interpret_a1(
+    submissions: list[dict], *, require_distinct_data_sources: bool = False
+) -> dict:
+    """Decide whether A1 holds from a series of job submissions.
+
+    Each submission must target a distinct data source; submitting repeatedly to
+    one data source measures the per-data-source concurrency limit rather than
+    the API rate limit, which is the flaw in the previous probe.
+    """
+    if require_distinct_data_sources:
+        data_source_ids = [
+            item["dataSourceId"] for item in submissions if "dataSourceId" in item
+        ]
+        if len(set(data_source_ids)) != len(data_source_ids):
+            raise ValueError(
+                "A1 requires distinct data sources per submission to isolate "
+                "the rate limit from the concurrency limit"
+            )
+
+    throttled_count = sum(1 for item in submissions if item["throttled"])
+    if throttled_count:
+        return {
+            "holds": True,
+            "throttledCount": throttled_count,
+            "conclusion": (
+                f"{throttled_count} of {len(submissions)} submissions were throttled; "
+                "a reconciliation channel must keep a rate limiter"
+            ),
+        }
+    return {
+        "holds": False,
+        "throttledCount": 0,
+        "conclusion": (
+            f"no throttling across {len(submissions)} rapid submissions; "
+            "the serial gate from the classic-KB reference architecture is "
+            "unnecessary here"
+        ),
+    }
+
+
+def interpret_a2(*, retrievable_before_sync: bool, retrievable_after_sync: bool) -> dict:
+    """Decide whether A2 holds from probe retrievability before and after sync."""
+    if not retrievable_before_sync:
+        return {
+            "holds": None,
+            "conclusion": (
+                "inconclusive: the probe document never became retrievable, so the "
+                "post-sync observation carries no information"
+            ),
+        }
+    if retrievable_after_sync:
+        return {
+            "holds": False,
+            "conclusion": (
+                "the probe survived the sync; a reconciliation job does not remove "
+                "documents outside the inclusion prefix"
+            ),
+        }
+    return {
+        "holds": True,
+        "conclusion": (
+            "the sync removes index-only documents; writing to S3 before direct "
+            "ingestion is a correctness requirement"
+        ),
+    }
+
+
+def poll_document_status(
+    client,
+    *,
+    knowledge_base_id: str,
+    data_source_id: str,
+    identifier: dict,
+    max_attempts: int = 30,
+    interval_seconds: float = 10.0,
+) -> str:
+    """Poll one document until it reaches a terminal status."""
+    in_flight = {"PENDING", "STARTING", "IN_PROGRESS", "DELETING", "DELETE_IN_PROGRESS"}
+    for _ in range(max_attempts):
+        response = client.get_knowledge_base_documents(
+            knowledgeBaseId=knowledge_base_id,
+            dataSourceId=data_source_id,
+            documentIdentifiers=[identifier],
+        )
+        status = response["documentDetails"][0]["status"]
+        if status not in in_flight:
+            return status
+        time.sleep(interval_seconds)
+    return "TIMED_OUT"
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `pytest tests/unit/test_probes.py -v`
+
+Expected: 8 passed。
+
+- [ ] **Step 5: 在沙箱执行探针并记录 ADR**
+
+此步需要真实 AWS 凭证与一个可用的 Managed KB（可来自 Task 9–11 的部署）。
+
+A1 测量步骤：创建 3 个一次性 Data Source（各指向一个空前缀），对每个提交
+`StartIngestionJob`，间隔约 0.5 秒，记录是否 `ThrottlingException`，然后删除这些 Data
+Source。
+
+A2 测量步骤：向 canonical 桶中**位于 Data Source inclusion prefix 之外**的键写入一个探针
+Markdown 与 sidecar；用 `build_probe_ingest_payload` 定向摄入；轮询至终态；用
+`build_probe_retrieve_request` 确认可检索（记为 before）；对该 Data Source 执行
+`StartIngestionJob` 并等其 `COMPLETE`；再次检索（记为 after）。
+
+创建 `docs/adr/ADR-006-assumption-probe-results.md`，填入实测数字：
+
+```markdown
+# ADR-006: A1/A2 假设探针结论
+
+- 状态：已接受
+- 日期：<执行日期>
+- 决策者：<执行者>
+
+## 背景
+
+两条假设影响摄入通道设计，此前无证据。旧探针 `scripts/23_verify_assumptions.sh` 的实现
+有三处错误，其结果不可用于架构决策。
+
+## 测量方法
+
+A1：<记录 Data Source 数量、提交间隔、SDK 版本、Region>
+A2：<记录探针对象键、inclusion prefix、摄入终态、两次检索结果>
+
+## 结论
+
+A1：<holds 或 refuted>，依据 <throttled 数量 / 总提交数>。
+A2：<holds、refuted 或 inconclusive>，依据 <before/after 可检索性>。
+
+## 影响
+
+- A1 不改变 Sprint 1 状态机：本次摄入与删除均走 Direct API，未调用
+  `StartIngestionJob`。结论用于后续对账通道是否需要限流器。
+- A2 不改变门禁 A：无论结论如何，本次都强制"先写 S3 再定向摄入"。A2 成立时这是正确性
+  要求；被推翻时它仍是防止 Manifest 与 canonical 桶漂移的一致性校验。
+
+## 复现
+
+`.venv/bin/python -m kbp.probes.assumptions --help`
+```
+
+- [ ] **Step 6: 删除旧探针并提交**
+
+```bash
+git rm scripts/23_verify_assumptions.sh
+git add kbp/probes tests/unit/test_probes.py \
+  docs/adr/ADR-006-assumption-probe-results.md
+git commit -m "Rewrite the assumption probes and record their results
+
+The previous probe measured per-data-source concurrency instead of the API rate
+limit, sent a CUSTOM payload to an S3 data source, and queried with
+vectorSearchConfiguration, which turns a broken probe into a silent zero-hit
+result."
+```
