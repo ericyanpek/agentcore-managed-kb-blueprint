@@ -47,13 +47,14 @@ aws-cdk-lib 2.265.0 类型定义核实（核实日期 2026-08-17），直接约�
 | `AWS::Bedrock::DataSource` 的 `tagging.taggable` 为 `false` | 成本分账 Tag 只能施加于 KB 与 S3，不能施加于 Data Source |
 | `aws-cdk-lib` 2.265.0 含 `ManagedKnowledgeBaseConfigurationProperty` 与 `ManagedKnowledgeBaseServerSideEncryptionConfigurationProperty` | L1 构造可表达 Managed KB 与 CMK 加密，无需自定义资源 |
 | 检索侧 Managed KB 使用 `managedSearchConfiguration` | 探针与冒烟检索不得使用 `vectorSearchConfiguration` |
+| `arn:aws:states:::aws-sdk:bedrockagent:{ingest,delete,get}KnowledgeBaseDocuments` 与 `bedrockagentruntime:retrieve` 均通过 `ValidateStateMachineDefinition` 校验 | 四个调用可用 Step Functions SDK 集成直接发起；冒烟检索无需 Lambda |
 
 ## 3. 执行模型选择
 
 选择 **Step Functions + 最小 Lambda**：状态机通过 SDK 集成直接调用
-`IngestKnowledgeBaseDocuments`、`DeleteKnowledgeBaseDocuments` 与
-`GetKnowledgeBaseDocuments`，轮询与重试使用原生 `Retry`/`Wait`/`Map`；仅门禁判定、
-Registry 读写与 S3 校验使用 Lambda。
+`IngestKnowledgeBaseDocuments`、`DeleteKnowledgeBaseDocuments`、
+`GetKnowledgeBaseDocuments` 与 `Retrieve`，轮询与重试使用原生
+`Retry`/`Wait`/`Map`；仅 S3 一致性校验、门禁判定与 Registry 读写使用 Lambda（共 3 个）。
 
 替代方案与落选理由：
 
@@ -81,7 +82,7 @@ infra/                          # CDK TypeScript
   lib/release-stack.ts          # DynamoDB、Step Functions、Lambda、publisher role
   test/                         # snapshot 与细粒度断言
 
-platform/
+kbp/                            # knowledge base platform（不可命名为 platform，见 4.2）
   preparation/
     corpus.py                   # 扫描、质量门禁、Manifest 生成（纯函数）
     diff.py                     # Manifest 比对，输出 added/modified/deleted
@@ -105,14 +106,31 @@ docs/adr/
 
 | 现有资产 | 处置 |
 | --- | --- |
-| `scripts/21_prepare_md_corpus.py` | 算法迁入 `platform/preparation/`，保留纯函数形态 |
-| `scripts/22_incremental_ingest.py` | 批次规划迁入 `platform/ingestion/batching.py`；执行部分由状态机取代 |
-| `scripts/23_verify_assumptions.sh` | 重写为 `platform/probes/`，修正三处错误：使用 Disposable Data Source 隔离并发变量、使用 S3 Payload 而非 `CUSTOM`、使用 `managedSearchConfiguration` |
+| `scripts/21_prepare_md_corpus.py` | 算法迁入 `kbp/preparation/`，保留纯函数形态 |
+| `scripts/22_incremental_ingest.py` | 批次规划迁入 `kbp/ingestion/batching.py`；执行部分由状态机取代 |
+| `scripts/23_verify_assumptions.sh` | 重写为 `kbp/probes/`，修正三处错误：使用 Disposable Data Source 隔离并发变量、使用 S3 Payload 而非 `CUSTOM`、使用 `managedSearchConfiguration` |
 | `scripts/02_provision.sh` | 删除，由 CDK 取代，避免两个 provisioning 真相并存 |
 | `scripts/21_prepare_md_corpus.sh`、`scripts/22_incremental_ingest.sh` | 删除，由 `cli/publish.py` 取代 |
 | `scripts/01`、`03`–`20`、`99` | 原地保留，作为已发布实验证据不做改动 |
 
 README 中英文需同步更新命令块，并通过 `scripts/13_check_readme_sync.py` 校验。
+
+### 4.2 包命名约束
+
+顶层包**不得命名为 `platform`**。`platform` 是 Python 标准库模块，顶层同名包会遮蔽
+它；botocore 在构造 User-Agent 时调用 `platform.system()`，遮蔽后任何从仓库根目录运行
+的 boto3 代码都将抛出 `AttributeError`。已实测确认。故采用 `kbp`。
+
+### 4.3 测试框架迁移
+
+现有 CI 使用 `python -m unittest discover -s tests`，且 `tests/test_data_preparation.py`
+通过 `importlib` 直接按路径加载 `scripts/21`、`scripts/22`——这两个路径在本次迁移后
+消失。
+
+处置：引入 pytest（可直接运行现存 `unittest.TestCase`，旧测试无需重写），CI 改为
+`pytest`。仅将 `test_data_preparation.py` 中 `md_corpus`、`md_ingestion` 两处
+`importlib` 加载改为从 `kbp` 包 import，其余加载语句保持不变。门禁边界测试用 pytest
+参数化编写。
 
 ## 5. CDK 基础设施
 
@@ -132,8 +150,8 @@ KnowledgeBaseStack (stateful, 终止保护开启)
     -> 导出 knowledgeBaseId 与 dataSourceId
 ReleaseStack (stateless, 可重建)
   DynamoDB release table  CMK 加密，PITR 开启
-  Lambda x4               门禁判定、Registry 读写、S3 校验、冒烟检索
-  StateMachine            Standard 类型
+  Lambda x3               S3 一致性校验、门禁判定、Registry 读写与 Promotion
+  StateMachine            Standard 类型；摄入、删除、终态查询、冒烟检索走 SDK 集成
   IAM publisher role      本地入口 assume 后 StartExecution
 ```
 
@@ -368,6 +386,8 @@ Embedding。
 
 三层测试对应三类失败模式。
 
+框架为 pytest，迁移方式见第 4.3 节。
+
 ### 10.1 单元测试（pytest，无 AWS 依赖）
 
 覆盖门禁纯函数的边界条件，这层应最密：
@@ -407,6 +427,7 @@ Embedding。
 - pytest 与 Jest 全部通过
 - `cdk-nag` 无未附理由的抑制项
 - `scripts/02_provision.sh` 已删除，README 中英文同步且通过链接与命令块校验
+- CI 已切换至 pytest 且既有数据准备测试仍通过
 
 ## 12. ADR 清单
 
