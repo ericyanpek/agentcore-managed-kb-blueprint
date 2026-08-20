@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ericyanpek/agentcore-managed-kb/schemas/release-manifest.schema.json",
+  "title": "Release manifest",
+  "description": "Immutable record of the documents published by one release.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "releaseId",
+    "parentReleaseId",
+    "corpusId",
+    "corpusSha256",
+    "sourceCommit",
+    "documentCount",
+    "changeCounts",
+    "status",
+    "documents"
+  ],
+  "properties": {
+    "releaseId": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]{0,255}$"
+    },
+    "parentReleaseId": {
+      "type": ["string", "null"],
+      "description": "Null for the first release of a corpus."
+    },
+    "corpusId": { "type": "string", "minLength": 1 },
+    "corpusSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sourceCommit": { "type": "string", "minLength": 1 },
+    "documentCount": { "type": "integer", "minimum": 0 },
+    "changeCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["added", "modified", "deleted"],
+      "properties": {
+        "added": { "type": "integer", "minimum": 0 },
+        "modified": { "type": "integer", "minimum": 0 },
+        "deleted": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["CANDIDATE", "ACTIVE", "SUPERSEDED", "FAILED"]
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "documentId",
+          "file",
+          "contentSha256",
+          "metadataSha256",
+          "s3VersionId"
+        ],
+        "properties": {
+          "documentId": { "type": "string", "minLength": 1 },
+          "file": { "type": "string", "minLength": 1 },
+          "contentSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "metadataSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "s3VersionId": {
+            "type": ["string", "null"],
+            "description": "Populated after upload; enables version-exact rollback."
+          }
+        }
+      }
+    }
+  }
+}

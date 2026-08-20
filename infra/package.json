@@ -1,0 +1,26 @@
+{
+  "name": "agentcore-managed-kb-infra",
+  "version": "0.1.0",
+  "private": true,
+  "bin": { "infra": "bin/app.js" },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "synth": "cdk synth",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@types/jest": "30.0.0",
+    "@types/node": "24.3.0",
+    "aws-cdk": "2.1137.0",
+    "jest": "30.4.2",
+    "ts-jest": "29.4.12",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.265.0",
+    "cdk-nag": "3.0.2",
+    "constructs": "10.8.1"
+  }
+}
