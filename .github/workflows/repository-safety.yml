@@ -25,6 +25,12 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
 
+      # The safety scan performs every content check through ripgrep and now
+      # refuses to run without it, rather than reporting success having scanned
+      # nothing.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Scan publishable files
         run: ./scripts/12_repository_safety_check.sh
 
@@ -54,4 +60,26 @@ jobs:
         run: python3 -m py_compile scripts/*.py
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests -v
+        run: python -m pytest tests -v
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install infrastructure dependencies
+        run: npm ci
+        working-directory: infra
+
+      - name: Run infrastructure tests
+        run: npx jest
+        working-directory: infra
+
+      - name: Synthesise CDK stacks
+        run: npx cdk synth --all
+        working-directory: infra
+        env:
+          CDK_DEFAULT_ACCOUNT: "123456789012"
+          CDK_DEFAULT_REGION: us-east-1

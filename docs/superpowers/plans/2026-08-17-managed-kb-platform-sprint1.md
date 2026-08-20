@@ -1077,8 +1077,8 @@ def test_ingest_payload_binds_the_metadata_sidecar_explicitly():
     )
 
 
-def test_delete_identifiers_use_s3_uris():
-    identifiers = batching.build_delete_identifiers(
+def test_document_identifiers_use_s3_uris():
+    identifiers = batching.build_document_identifiers(
         documents=[document("doc-1")],
         bucket="canonical-bucket",
         prefix="canonical/demo",
@@ -1193,10 +1193,14 @@ def build_ingest_payload(
     ]
 
 
-def build_delete_identifiers(
+def build_document_identifiers(
     *, documents: list[dict], bucket: str, prefix: str
 ) -> list[dict]:
-    """Build DocumentIdentifier entries for DeleteKnowledgeBaseDocuments."""
+    """Build DocumentIdentifier entries.
+
+    Used both to delete documents and to poll their status, since both APIs take
+    the same identifier shape.
+    """
     return [
         {
             "dataSourceType": "S3",
@@ -4924,14 +4928,14 @@ def build_execution_input(
             "clientToken": manifest_module.build_client_token(
                 release_id=release_id, operation="delete", batch_index=index
             ),
-            "identifiers": batching.build_delete_identifiers(
+            "identifiers": batching.build_document_identifiers(
                 documents=batch, bucket=bucket, prefix=prefix
             ),
         }
         for index, batch in enumerate(batching.split_batches(deletions))
     ]
 
-    poll_identifiers = batching.build_delete_identifiers(
+    poll_identifiers = batching.build_document_identifiers(
         documents=upserts + deletions, bucket=bucket, prefix=prefix
     )
 

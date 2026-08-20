@@ -1,4 +1,3 @@
-import argparse
 import importlib.util
 import json
 import sys
@@ -8,6 +7,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+from kbp.ingestion import batching
+from kbp.preparation import corpus as md_corpus
+from kbp.preparation import diff as md_diff
 
 
 def load_module(name: str, relative_path: str):
@@ -28,8 +31,6 @@ compare_semantic = load_module(
     "scripts/16_compare_semantic_chunking.py",
 )
 expanded = load_module("expanded", "scripts/20_expand_metadata_retrieval.py")
-md_corpus = load_module("md_corpus", "scripts/21_prepare_md_corpus.py")
-md_ingestion = load_module("md_ingestion", "scripts/22_incremental_ingest.py")
 profiler = load_module(
     "profiler",
     ".agents/skills/kb-rag-data-preparation/scripts/profile_corpus.py",
@@ -49,36 +50,14 @@ class DataPreparationTests(unittest.TestCase):
                 )
 
             initial = md_corpus.prepare(
-                argparse.Namespace(
-                    source_dir=source,
-                    output_dir=root / "prepared-v1",
-                    corpus_id="enterprise-domain",
-                    embedded_fields="title,section_path,domain,topic",
-                )
+                source_dir=source,
+                output_dir=root / "prepared-v1",
+                corpus_id="enterprise-domain",
+                embedded_fields=("title", "section_path", "domain", "topic"),
             )
-            initial_changes = md_corpus.diff_manifests({"documents": []}, initial)
+            initial_changes = md_diff.diff_manifests(None, initial)
             self.assertEqual(len(initial_changes["added"]), 50)
-
-            initial_report = root / "initial-report.json"
-            initial_report.write_text(
-                json.dumps(
-                    {
-                        "corpusId": "enterprise-domain",
-                        "documentCount": 50,
-                        "changeCounts": {
-                            "added": 50,
-                            "modified": 0,
-                            "deleted": 0,
-                        },
-                        "changes": initial_changes,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            initial_plan = md_ingestion.plan(
-                self.ingestion_plan_args(initial_report)
-            )
-            self.assertEqual(initial_plan["fastPathBatches"], 5)
+            self.assertEqual(len(batching.split_batches(initial_changes["added"])), 5)
 
             for index in range(5):
                 (source / f"doc-{index:02d}.md").write_text(
@@ -87,53 +66,18 @@ class DataPreparationTests(unittest.TestCase):
                 )
 
             updated = md_corpus.prepare(
-                argparse.Namespace(
-                    source_dir=source,
-                    output_dir=root / "prepared-v2",
-                    corpus_id="enterprise-domain",
-                    embedded_fields="title,section_path,domain,topic",
-                )
+                source_dir=source,
+                output_dir=root / "prepared-v2",
+                corpus_id="enterprise-domain",
+                embedded_fields=("title", "section_path", "domain", "topic"),
             )
-            update_changes = md_corpus.diff_manifests(initial, updated)
+            update_changes = md_diff.diff_manifests(initial, updated)
             self.assertEqual(len(update_changes["modified"]), 5)
             self.assertEqual(len(update_changes["added"]), 0)
             self.assertEqual(len(update_changes["deleted"]), 0)
-
-            update_report = root / "update-report.json"
-            update_report.write_text(
-                json.dumps(
-                    {
-                        "corpusId": "enterprise-domain",
-                        "documentCount": 50,
-                        "changeCounts": {
-                            "added": 0,
-                            "modified": 5,
-                            "deleted": 0,
-                        },
-                        "changes": update_changes,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            update_plan = md_ingestion.plan(self.ingestion_plan_args(update_report))
-            self.assertEqual(update_plan["fastPathBatches"], 1)
-            self.assertEqual(
-                update_plan["steps"][0]["documentCount"],
-                5,
-            )
-
-    @staticmethod
-    def ingestion_plan_args(change_report: Path) -> argparse.Namespace:
-        return argparse.Namespace(
-            change_report=change_report,
-            batch_size=10,
-            direct_requests_per_second=20.0,
-            always_reconcile=False,
-            throttle_interval_seconds=10.0,
-            deletion_protection_threshold=0.5,
-            assume_sync_removes_direct_documents=True,
-            s3_prefix="canonical",
-        )
+            update_batches = batching.split_batches(update_changes["modified"])
+            self.assertEqual(len(update_batches), 1)
+            self.assertEqual(len(update_batches[0]), 5)
 
     def test_pdf_page_cleanup_removes_repeated_header_and_footer(self):
         source = "游戏行业视角 AWS 白皮书\n\n正文内容\n\n12"
