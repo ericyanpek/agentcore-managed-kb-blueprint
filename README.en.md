@@ -10,7 +10,7 @@ runnable code:
 | 1 | How knowledge gets into the KB, and how to do incremental updates correctly | [Ingestion pipeline](#3-ingestion-pipeline) · `kbp/preparation` `kbp/ingestion` |
 | 2 | Which Managed KB parameters are tunable and which are immutable | [Parameter boundaries](#4-parameter-boundaries) |
 | 3 | How to improve retrieval after indexing | [Retrieval tuning](#5-retrieval-tuning) · `docs/METADATA_EXPERIMENT.md` |
-| 4 | What justifies shipping or rolling back a KB version | [Evaluation and release criteria](#6-evaluation-and-release-criteria) · `scripts/20` |
+| 4 | Which facts a ship-or-roll-back decision needs | [Evaluation](#6-evaluation-facts-for-the-release-decision) · `scripts/20` |
 
 > **Responsibility boundary:** Managed KB owns parsing, embedding, indexing,
 > storage and retrieval. The system of record, authorization, quality evaluation
@@ -34,7 +34,7 @@ That is the vehicle for items 1 and 4, not the point of this repository.
 | Does metadata improve recall? | No measurable gain from metadata in the embedding; a runtime filter raised MRR on 36 filterable queries from 0.241 to 0.556. |
 | Does agentic retrieval always issue follow-up searches? | No. `maxAgentIteration` is a ceiling; `actions=[]` means the planner triggered no follow-up, not that something failed. |
 | Can chunk size be customized under managed embedding? | Not currently — the API requires omitting `chunkingConfiguration` and uses the service default of 300 tokens / 20% overlap. |
-| What justifies shipping a new KB version? | A paired retrieval comparison over a fixed golden set: ship only when all four metrics have a 95% CI lower bound above -0.02; roll back when any metric's CI lies entirely below zero. |
+| Which facts does a ship decision need? | A paired retrieval comparison over a fixed golden set: Hit@1 / MRR / Recall@10 / nDCG@10 each with a mean delta, a bootstrap 95% CI and per-case improved/tied/regressed counts. The acceptable magnitude of regression is the business side's to set; this repository states no threshold. |
 
 Full numbers, query cases and evidence are in the
 [results report](docs/RESULTS.md).
@@ -199,7 +199,7 @@ Two consequences are easy to misread:
 - "Skip rather than fail" makes it a hint, not a block.
 
 So the deletion-ratio gate in this repository
-([section 6](#6-evaluation-and-release-criteria)) is the only control on the
+([section 6.4](#64-the-full-gate-order-before-release)) is the only control on the
 direct deletion path — not a second line of defense.
 
 ### 4.4 Tunable per retrieval
@@ -312,13 +312,20 @@ diagnostics proved the source document did contain the relevant content — the 
 cause was Smart Parsing destroying the Chinese chunks. A grounded failure is
 evidence about index state, never a conclusion about corpus coverage.
 
-## 6. Evaluation and release criteria
+## 6. Evaluation: facts for the release decision
 
 The release decision answers one question: **is this KB version's retrieval
 quality no worse than the previous one.** Neither a source diff nor a manifest
 diff can answer it — Managed KB exposes no comparable underlying vector index, so
 behavioral changes in chunking, embedding and ranking are observable only through
 retrieval regression.
+
+**This section establishes facts; it does not set criteria.** How much retrieval
+regression is unacceptable depends on business tolerance, what this content is
+used for, and the cost of rolling back — that decision belongs to the business
+side, and this repository does not make it for them. What follows is: what to
+measure, how to measure it, how to read the result, and what the measurement
+cannot tell you.
 
 ### 6.1 Three diffs, all required
 
@@ -328,7 +335,7 @@ retrieval regression.
 | Release diff | Which documents to add, modify or delete | Compare content and metadata SHA-256 across manifests |
 | **Retrieval diff** | **Which recall results the new version changed** | Paired comparison over a fixed golden set |
 
-### 6.2 Decision metrics
+### 6.2 What to measure
 
 `scripts/20_expand_metadata_retrieval.py` already implements the paired
 comparison. Each metric reports a mean delta, a bootstrap 95% confidence interval
@@ -342,24 +349,45 @@ improved / tied / regressed counts:
 | Recall@10 | `recallAt10` | Coverage — critical for questions needing several pieces of evidence |
 | nDCG@10 | `nDcgAt10` | Overall ranking quality, weighing both hits and positions |
 
-### 6.3 Ship or roll back
+### 6.3 How to read the result
 
 Use the paired comparison rather than absolute values: run the same query set
-against both versions and look at the distribution of deltas.
+against both versions and look at the distribution of deltas. Each metric yields
+three numbers, answering three different questions:
 
-| Situation | Criterion | Action |
+| Read | Answers | Caveat |
 | --- | --- | --- |
-| No significant regression | All four metrics have a 95% CI lower bound above -0.02 | **Ship** |
-| Significant regression | Any metric's 95% CI lies **entirely below zero** | **Roll back** |
-| Inconclusive | The CI spans zero and the mean delta is below -0.02 | Enlarge the golden set and re-measure; do not release on this data |
+| Mean delta | Did it get better or worse on average | The mean alone cannot separate real regression from sampling noise |
+| Bootstrap 95% CI | Is that direction trustworthy | A CI spanning zero means the data supports no conclusion in either direction, including "it improved" |
+| improved / tied / regressed counts | Is the change concentrated or spread | A mean delta of zero can still be "half better, half worse", which is not the same as unchanged for users |
 
-**Why the CI and not just the mean delta:** at a sample size of 44 queries a mean
-delta of -0.03 may be noise. Only a CI entirely below zero shows the regression is
-systematic. Conversely, an apparent improvement is equally untrustworthy when the
-CI spans zero.
+Three characteristic shapes:
 
-The -0.02 threshold is a starting point for this repository's corpus size, not a
-universal value. A larger golden set allows tightening it.
+| Shape | What it means factually |
+| --- | --- |
+| CI entirely above zero | The improvement is systematic, not noise |
+| CI entirely below zero | The regression is systematic, not noise |
+| CI spans zero | This data cannot establish a direction; sample size or effect size is insufficient |
+
+**What the measurement cannot tell you** — these matter more to hand over than
+the metrics themselves:
+
+- **Metrics do not weigh severity.** An internal-jargon query and a compliance
+  clause query each losing 0.1 are equivalent in MRR and not equivalent in
+  business consequence. Separating them requires grading the golden set or
+  reporting per stratum.
+- **The golden set's coverage is the ceiling on what evaluation can see.** 44
+  queries cannot show that a 45th class of question did not regress.
+- **A paired comparison only covers known questions.** The new version may
+  regress on phrasings nobody wrote into the golden set.
+- **Not significant is not the same as no regression.** It only means this sample
+  size cannot see one.
+
+This is why the repository deliberately states no "regression this large means
+roll back" number. What the decision maker needs to define is: which metrics are
+hard requirements, what magnitude of regression is acceptable, and how broadly the
+golden set must cover to count as sufficient. Once those three are fixed, the
+output of `scripts/20` can be read against them directly.
 
 ### 6.4 The full gate order before release
 
@@ -382,6 +410,15 @@ Step 5 deserves separate emphasis: `DocumentStatus` has 12 values and **only
 `INDEXED` is full success**. `PARTIALLY_INDEXED` means some chunks failed — the
 content is incomplete while the API reports no error, so treating it as success is
 silent data corruption.
+
+**Implementation status, stated plainly.** The state machine currently implements
+steps 2, 3, 5 and 8: gate D is a single-query smoke retrieval (present/absent),
+not the paired comparison of step 6. Step 6's metrics are computed separately by
+`scripts/20`, and the ACL regression in step 7 is not implemented. So this section
+describes the complete method, within which retrieval regression is today **run
+offline and read by a human** — which matches leaving the criteria to the business
+side: establish the facts first, then wire in criteria and automation once the
+standard is fixed.
 
 ### 6.5 Regression scope by change type
 
@@ -493,8 +530,8 @@ and command blocks. The full policy is in [SECURITY.md](SECURITY.md).
   enough.
 - **There is no independent drift detection:** a tampered S3 object is caught only
   when the next release's manifest happens to cover it, at gate A.
-- The golden set currently holds 44 queries, which is a small sample; the -0.02
-  threshold in 6.3 is correspondingly conservative.
+- The golden set currently holds 44 queries written for the metadata experiment;
+  both its sample size and its coverage are narrow for release evaluation.
 - Managed KB creation was measured at roughly 24 minutes, far beyond the 2-5
   minutes the documentation states; CI timeouts should not be set to 5 minutes.
 - This repository contains no AWS credentials, real account evidence or customer
