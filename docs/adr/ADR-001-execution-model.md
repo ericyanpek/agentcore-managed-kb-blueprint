@@ -27,7 +27,7 @@ Lambda 包装。轮询循环使用原生 `Wait`/`Choice` 状态，节流重试�
 
 ## 理由
 
-**15 分钟上限是决定性约束。** 大规模语料的初次发布中，逐步轮询数千个文档的终态
+**15 分钟上限排除了单次 Lambda 编排。** 大规模语料的初次发布中，逐步轮询数千个文档的终态
 可能需要远超 15 分钟，这在 Lambda 内无解。Step Functions Standard 状态机单次执行
 最长可跑一年，轮询次数由 `maxPollAttempts` 参数控制，与运行时资源无关。
 
@@ -37,10 +37,10 @@ Lambda 包装。轮询循环使用原生 `Wait`/`Choice` 状态，节流重试�
 `arn:aws:states:::aws-sdk:bedrockagentruntime:retrieve` 均可作为 SDK 集成直接用于
 状态机，冒烟检索步骤无需任何 Lambda。
 
-**Fail-closed 由拓扑保证而非代码纪律保证。** 每道门禁是独立的 `Choice` 状态，失败
-分支直接指向 `FailRelease`，不存在绕行路径。这比在 Lambda 函数中逐级检查返回值更可靠。
+**Fail-closed 由拓扑强制执行。** 每道门禁是独立的 `Choice` 状态，失败分支直接
+指向 `FailRelease`，不存在其他路径，也无需依赖 Lambda 调用方逐级检查返回值。
 
-**判定逻辑以纯函数形态存在于 Lambda 中，而非嵌入状态机 JSON。** 门禁算法（删除比例、
+**判定逻辑以纯函数形态存在于 Lambda 中。** 门禁算法（删除比例、
 终态聚合、冒烟检索评估）接受数据结构、返回判定结果，不调用任何 AWS SDK。这使得它们
 可由 pytest 直接覆盖，无需 AWS 环境。Lambda 的角色仅是 I/O 适配器。
 

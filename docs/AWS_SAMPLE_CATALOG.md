@@ -16,14 +16,14 @@
 - Commit：[`0f072b52163145db5d9903846fb537be7b73df1f`](https://github.com/aws-samples/amazon-bedrock-samples/tree/0f072b52163145db5d9903846fb537be7b73df1f)
 - Commit 时间：2026-07-21T18:46:37Z
 
-实验执行时必须记录实际 SHA，不能依赖 `main` 长期稳定。
+实验执行时必须记录实际 SHA；`main` 分支不作为可复现版本标识。
 
 ## 2. 使用原则
 
 1. Developer Guide、Release Notes、API Reference 和 Pricing 决定当前事实。
 2. `amazon-bedrock-samples/rag/managed-knowledge-bases` 验证 KB 生命周期和特性。
 3. `agentcore-samples/.../04-fmkb-managed-kb` 验证 Gateway/Runtime 集成。
-4. Notebook 和 helper 只证明示例路径可行，不构成生产安全或合规结论。
+4. Notebook 和 helper 用于验证示例路径，不作为生产安全或合规证据。
 5. 所有 sample 都需补齐最小权限、Tags、负向测试、发布门禁、成本和清理复核。
 
 ## 3. AgentCore Managed KB 集成样例
@@ -88,7 +88,7 @@
 | 7 | `07-gateway-interceptor.ipynb` | 动态 Filter 注入 |
 | 8 | `08-full-governance.ipynb` | JWT + Cedar + Interceptor + Filter |
 
-企业采用时不能简单认为第 8 个 Notebook 即“完整治理”。仍需验证：
+第 8 个 Notebook 覆盖的控制不等同于完整的企业治理。采用前仍需验证：
 
 - 用户身份是否由受信 Claims 生成，Interceptor 是否允许客户端覆盖。
 - Cedar 只保护 Gateway Tool，还是同时存在直接 KB 绕过路径。

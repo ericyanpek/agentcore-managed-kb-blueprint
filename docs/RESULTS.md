@@ -54,7 +54,7 @@ S3 已启用：
 
 Managed KB 的 embedding、向量索引、托管 reranker 和检索基础设施由
 AWS 管理，不会暴露为客户自己的 S3 Vectors bucket 或 OpenSearch
-collection。这是它与账户中已有 `VECTOR + S3_VECTORS` KB 的核心差异。
+collection。这是它与账户中已有 `VECTOR + S3_VECTORS` KB 的主要实现差异。
 
 检索结果中的 HTTPS S3 URI 是来源标识，不代表对象已公开；桶仍然是私有的。
 
@@ -177,8 +177,8 @@ Speculative Retrieval 和 Planning 均为 `SUCCEEDED`，最终 planning
 
 最终返回 10 个分块、0 个 citation span。回答明确指出文档只支持 DDoS、
 AWS WAF、区域后端和性能等基础设施内容，不足以回答客户端完整性、行为检测、
-封禁与回滚、作弊模式迭代等游戏内反作弊实践。这是合理的 grounded failure：
-服务没有把常识性反作弊建议伪装成知识库事实。
+封禁与回滚、作弊模式迭代等游戏内反作弊实践。这是一次 grounded failure：
+服务没有将常识性反作弊建议表述为知识库事实。
 
 后续 PDF 诊断发现，源文档实际包含玩家行为监控、服务器端会话票证验证和绕过
 配对系统案例。因此这里的 grounded failure 只说明当前索引未提供证据，不能用于
@@ -369,9 +369,9 @@ schema、身份关联、sessionization、迟到事件处理、具体异常阈值
   break-glass 流程。
 - 定期执行权限复核、陈旧文档检查、删除恢复演练、检索质量评测和成本审计。
 
-## 9. 优势与限制
+## 9. 托管特性与限制
 
-主要优势：
+托管特性：
 
 - 不需要部署和维护向量数据库。
 - 托管 embedding、reranker、Smart Parsing 和多模态索引。

@@ -7,7 +7,7 @@
 本报告汇总 AWS 官方产品文档、AWS Well-Architected Lens、AWS Prescriptive
 Guidance 和 AWS 官方博客中关于 Knowledge Base 与 Retrieval-Augmented
 Generation（RAG）的实践，并结合本仓库对 Amazon Bedrock AgentCore Managed
-Knowledge Base 的实测结果，形成一套可执行的质量、治理、更新、性能和运营框架。
+Knowledge Base 的实测结果，说明质量、治理、更新、性能和运营各环节的实施要求。
 
 文中使用三类结论：
 
@@ -99,8 +99,8 @@ Source 时，显式提交 `chunkingConfiguration` 会被 API 拒绝，必须省�
 
 ### 5.1 源内容优化
 
-AWS Prescriptive Guidance 建议先让内容更适合检索，而不是依赖模型弥补文档
-结构问题。推荐：
+AWS Prescriptive Guidance 建议先调整源内容，使其适合检索；模型无法可靠补偿
+文档结构缺陷。建议：
 
 - 使用明确、唯一、层级稳定的标题与子标题。
 - 对步骤、策略和控制项使用连续编号。
@@ -142,8 +142,8 @@ Managed `SMART_PARSING` 组合后丢失大量中文字符。这是解析兼容�
 
 ### 5.3 Chunking
 
-Chunking 的目标不是平均切文本，而是构造能够独立回答问题、同时保留上下文的
-证据单元。
+Chunking 应构造可独立支持回答、且保留必要上下文的证据单元。平均长度只是实现
+约束之一。
 
 - FAQ、短文章和结构均匀的内容可从 200-300 Tokens、10%-20% Overlap 开始。
 - 长篇技术文档适合 Semantic Chunking。
@@ -535,8 +535,8 @@ Parser、Chunking 或 Embedding 改动应使用蓝绿 Data Source/KB。通过回
 | 每月 | Golden Set 更新、权限复核、过期文档、成本与容量 |
 | 每季度 | Parser、Embedding、Reranker、Model 重评和恢复演练 |
 
-应建立反馈闭环，但不要直接把用户反馈自动写回生产语料。反馈先进入候选队列，由
-Content Owner/SME 去重、核验、分类和审批。
+用户反馈先进入候选队列，经 Content Owner/SME 去重、核验、分类和审批后，方可
+写入生产语料。
 
 ## 15. 本项目差距分析
 

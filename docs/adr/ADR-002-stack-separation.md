@@ -29,7 +29,7 @@ ReleaseStack 独立重建时不依赖其他 Stack 的对象。
 
 ## 理由
 
-**`ManagedKnowledgeBaseConfiguration` 为 create-only 是决定性约束。** 经核实的
+**`ManagedKnowledgeBaseConfiguration` 的 create-only 属性决定 KB 必须隔离。** 经核实的
 CloudFormation 资源 Schema（核实日期 2026-08-17）显示，
 `KnowledgeBaseConfiguration/ManagedKnowledgeBaseConfiguration` 字段标记为
 `createOnly`。这意味着修改 embedding 配置——例如更换 embedding 模型类型——会触发
@@ -47,8 +47,8 @@ FoundationStack 并导出 ARN，其他 Stack 通过 `kms.Key.fromKeyArn()` 引�
 即删除 CFN 资源不会清空知识库中对应的文档。这是防御性设定：索引内容重建代价高，
 而 RETAIN 不妨碍通过 API 显式删除文档。
 
-**canonical 与 registry 分桶是生命周期语义不同的必然结果。** Manifest 是审计证据，
-永不过期；canonical 桶的非当前版本设 30 天自动清理（文档可重新上传）。分桶避免
+**canonical 与 registry 按生命周期分桶。** Manifest 是审计证据，永不过期；
+canonical 桶的非当前版本设 30 天自动清理（文档可重新上传）。分桶避免
 生命周期规则相互干扰，也让权限边界更清晰（KB service role 只读 canonical 桶）。
 
 ## 后果

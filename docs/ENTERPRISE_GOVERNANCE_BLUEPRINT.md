@@ -6,9 +6,9 @@
 
 本蓝图面向 AI Platform、Security、IAM、Data Governance、Application Owner
 和内容 Owner，定义 Amazon Bedrock Managed Knowledge Base（下称 Managed KB）
-如何作为企业共享检索能力被设计、发布和运营。
+作为企业共享检索能力时的设计、发布和运营要求。
 
-一句话心智模型：
+边界定义：
 
 > Managed KB 是由 Amazon Bedrock 托管解析、索引、存储与检索基础设施的区域性
 > RAG 数据平面；它降低向量基础设施运维，但不替代事实源、最终授权、内容治理、
@@ -59,17 +59,17 @@
 - 不保证 Agentic Retrieval 一定追加检索；迭代数是上限，不是执行承诺。
 - Guardrails 不等于租户隔离、业务授权或源数据脱敏。
 
-### 2.3 五个容易混淆的概念
+### 2.3 五组边界概念
 
-1. **Managed KB 不是 AgentCore 独立资源类型**：资源由 Amazon Bedrock
+1. **Managed KB 的资源归属**：资源由 Amazon Bedrock
    `bedrock-agent` 控制面创建，但可原生接入 AgentCore Gateway 和 Observability。
-2. **Managed Storage 不等于事实源**：服务内索引是派生状态，S3/CMS/Drive 和
+2. **Managed Storage 与事实源**：服务内索引是派生状态，S3/CMS/Drive 和
    发布 Manifest 才是可重建的权威状态。
-3. **Metadata Filter 不等于认证**：Filter 只有在值来自可信身份上下文且
+3. **Metadata Filter 与认证**：Filter 只有在值来自可信身份上下文且
    Fail Closed 时，才能成为授权链的一部分。
-4. **Agentic Retrieval 不等于自动获得更高质量**：复杂查询可能受益，但也增加
+4. **Agentic Retrieval 与质量**：复杂查询可能受益，但也增加
    规划模型、迭代检索、延迟和成本。
-5. **PrivateLink 不等于授权**：私网路径降低网络暴露，IAM、Resource Policy、
+5. **PrivateLink 与授权**：私网路径降低网络暴露，IAM、Resource Policy、
    Gateway Policy 和文档级过滤仍然必须存在。
 
 ## 3. 资源、控制面、数据面与身份

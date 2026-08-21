@@ -1,8 +1,10 @@
 # Managed KB 平台 Sprint 1 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **实施约束：** 按 Task 顺序执行，并使用复选框（`- [ ]`）记录进度。支持
+> Superpowers 的环境应使用 `subagent-driven-development`（推荐）或
+> `executing-plans`。
 
-**Goal:** 把本仓库从研究型脚本集合升级为平台基线：CDK 管理全部基础设施，远程 Release Registry 保存发布状态，Fail-closed 状态机保证发布失败不污染活动版本。
+**目标：** 为现有研究脚本建立平台基线：CDK 管理全部基础设施，远程 Release Registry 保存发布状态，Fail-closed 状态机在发布失败时保持活动版本不变。
 
 **Architecture:** 三个 CDK Stack（Foundation / KnowledgeBase / Release）按 stateful 与 stateless 切分。发布由 Step Functions Standard 编排，摄入、删除、终态查询、冒烟检索走 SDK 集成，仅 S3 校验、门禁判定、Registry 读写用 Lambda。所有判定逻辑是 `kbp/` 包中的纯函数，Lambda handler 只做 I/O 适配，因此门禁行为可在无 AWS 环境下测试。
 
@@ -16,9 +18,8 @@
 
 ### 领域背景
 
-Amazon Bedrock **Managed Knowledge Base** 托管解析、Embedding、索引与检索。你不能直接
-读写它的向量索引，只能通过 API 提交文档并轮询状态。这带来两个后果，本计划的大部分设计
-都是为了应对它们：
+Amazon Bedrock **Managed Knowledge Base** 托管解析、Embedding、索引与检索。调用方不能直接
+读写其向量索引，只能通过 API 提交文档并轮询状态。由此产生两项直接约束：
 
 1. **摄入是异步的。** `IngestKnowledgeBaseDocuments` 返回 HTTP 202 只表示"请求已接受"，
    不表示文档已可检索。必须轮询 `GetKnowledgeBaseDocuments` 直到终态。
@@ -28,8 +29,8 @@ Amazon Bedrock **Managed Knowledge Base** 托管解析、Embedding、索引与�
 **Manifest** 是本项目的核心契约：一个 JSON 文件，记录某次发布包含哪些文档、每个文档内容
 与 metadata 的 SHA-256。两次 Manifest 相比即得出 added/modified/deleted。
 
-**Fail-closed** 指：任何门禁不通过时，系统停在原地且活动版本不受影响，而不是"记录告警后
-继续"。本计划中它由状态机拓扑保证——门禁到 Promotion 不存在绕行路径。
+**Fail-closed** 指任何门禁不通过时终止发布并保持活动版本不变。本计划通过状态机
+拓扑强制该行为；门禁与 Promotion 之间不存在其他路径。
 
 ### 关键陷阱（会导致静默数据损坏或直接崩溃）
 

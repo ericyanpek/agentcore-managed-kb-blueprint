@@ -4,7 +4,7 @@
 
 本文回答一个具体问题：一家企业已有大量 Markdown 文档（Wiki 导出、Docs-as-Code
 仓库、Runbook 集合），要在 Amazon Bedrock AgentCore Managed Knowledge Base 上
-构建 MVP，如何得到一条真正可持续更新的 Pipeline。
+构建 MVP，如何设计一条可持续更新的 Pipeline。
 
 沿用本仓库的证据分级：
 
@@ -85,9 +85,9 @@ Corpus 级约束变化。
 Unicode replacement character 归零。详见
 [RESULTS.md](RESULTS.md) 第 6 节。
 
-对本文场景的意义：企业 Markdown 语料**天然位于修复后的状态**，不经过 PDF
-文本层与版面重建，绕开了本仓库观测到的主要质量风险。因此 Markdown MVP 的
-工程重心不在解析质量，而在更新编排、治理与发布门禁。
+企业 Markdown 语料不经过 PDF 文本层与版面重建，因此不受本仓库已观测到的
+PDF 解析问题影响。Markdown MVP 仍需验证解析结果，但主要工程工作集中在更新
+编排、治理与发布门禁。
 
 需要保留的一项检查是编码与结构门禁。Markdown 由人编写，会出现空文档、
 损坏字符、重复标识和超限文件。`scripts/21_prepare_md_corpus.py` 对每份文档
@@ -101,7 +101,7 @@ Unicode replacement character 归零。详见
 | Sidecar 大小 | ≤ 10 KB | 与既有 Metadata 实验一致 |
 | `document_id` 唯一 | 全语料唯一 | 重复标识会相互覆盖 |
 
-## 3. 关键前提：Managed KB 的配额不是 Classic KB 的配额
+## 3. 配额前提：Managed KB 与 Classic KB 不同
 
 搜索「Bedrock Knowledge Base 自动同步」会命中 AWS 2026-04-27 的
 [Build and deploy an automatic sync solution](https://aws.amazon.com/blogs/machine-learning/build-and-deploy-an-automatic-sync-solution-for-amazon-bedrock-knowledge-bases/)。
@@ -132,9 +132,9 @@ Knowledge Base 于 2026 年 6 月 GA，配额显著不同：
 与 [Amazon Bedrock 服务配额](https://docs.aws.amazon.com/general/latest/gr/bedrock.html)，
 均为 Not adjustable 项。
 
-**「并发 Job / KB 从 1 变成 50」是本文最重要的一条。** 在 Managed KB 上照搬
-上述参考架构里「等待活跃 Job 归零」的门闩属于过度设计：它把可并行的摄入强行
-串行，把 Freshness Lag 从秒级放大到分钟级，却没有换来任何配额收益。
+Managed KB 将每个 KB 的并发 Job 配额从 1 提高到 50。若直接沿用上述参考架构中
+「等待活跃 Job 归零」的门闩，可并行摄入会被串行化，Freshness Lag 可能从秒级
+扩大到分钟级，且不产生配额收益。
 
 反过来，`StartIngestionJob` 的 0.1 rps 在通用配额页**只列出 Classic 版本，
 没有 Managed 版本**。本文不据此断言 Managed KB 同样受 0.1 rps 约束，该项
@@ -278,7 +278,7 @@ canonical/manual/player-analytics.md
 优先按章节、控制项或业务主题拆分，不建议直接按页拆分。插页和跨页段落会让页码
 整体漂移，导致大量无业务意义的变更。
 
-## 6. Metadata 策略直接沿用本仓库实测结论
+## 6. Metadata 策略依据本仓库实测结果
 
 本仓库以 479 份字节相同的语料、44 条查询、408 次 `Retrieve` 做过三组对照
 （无 Sidecar、全部 `includeForEmbedding=false`、语义字段

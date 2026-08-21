@@ -31,18 +31,18 @@ attribute_not_exists(activeReleaseId) OR activeReleaseId = :expectedPrevious
 
 ## 理由
 
-**S3 是 Manifest 内容的权威副本，容灾性比 DynamoDB 更强。** 即使 DynamoDB 表被误
-删或损坏，版本化 S3 桶中的每份历史 Manifest 仍可完整恢复。重建发布状态只需重新
+**S3 保存 Manifest 内容的权威副本。** 即使 DynamoDB 表被误删或损坏，版本化 S3
+桶中的每份历史 Manifest 仍可完整恢复。重建发布状态只需重新
 扫描桶内对象并重写表记录，无需重新执行摄入。相反，Manifest 内容全量存入 DynamoDB
 时，表的删除或误操作会同时抹除状态与内容，且 DynamoDB 项目大小上限（400 KB）可能
 不足以存储大规模语料的 Manifest。
 
-**指针的原子切换只能依赖 DynamoDB 条件写，S3 无法提供等价原语。** S3 的条件写
+**指针的原子切换使用 DynamoDB 条件写。** S3 的条件写
 （`If-None-Match`）仅保证对象不存在时才写入，无法表达"当前值等于预期值时才更新"的
 CAS 语义。DynamoDB 的 `ConditionExpression` 原生支持此语义，后到的并发执行会收到
 `ConditionalCheckFailedException` 并进入 `FAILED`，而不是静默覆盖。
 
-**Promotion 的三步顺序保证每个中间状态都是安全可读的。** 实现中（`store.py:
+**Promotion 的三步顺序约束中间状态。** 实现中（`store.py:
 promote_release`）三步顺序为：
 
 1. **将本次发布状态标记为 `ACTIVE`**。读者跟随指针时不会落到一个状态不是 ACTIVE

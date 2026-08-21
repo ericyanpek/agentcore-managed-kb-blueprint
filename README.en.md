@@ -2,8 +2,8 @@
 
 **English** | [中文](README.md)
 
-This repository answers four questions, each backed by measured numbers or
-runnable code:
+This repository is organized around four questions. Each finding is supported
+by measured data or runnable code:
 
 | # | Question | Where |
 | --- | --- | --- |
@@ -20,9 +20,11 @@ runnable code:
 The corpus is the AWS Well-Architected Games Industry Lens whitepaper; all
 measurements were completed in 2026-08.
 
-The infrastructure behind the release pipeline (CDK, Step Functions, the atomic
-DynamoDB pointer) lives in [Platform implementation](#7-platform-implementation).
-That is the vehicle for items 1 and 4, not the point of this repository.
+The infrastructure behind the release pipeline (CDK, Step Functions, and the
+atomic DynamoDB pointer) is described in
+[Platform implementation](#7-platform-implementation). It implements items 1
+and 4; the main discussion remains focused on ingestion, retrieval, and
+evaluation.
 
 ## 1. Key findings
 
@@ -174,7 +176,7 @@ prefixes live inside the `connectorParameters` JSON document, not in
      "filterConfiguration": {"inclusionPrefixes": ["canonical/demo/"]}}}}
 ```
 
-### 4.2 Chunking and embedding: almost no knobs
+### 4.2 Chunking and embedding: limited tuning options
 
 Managed embedding currently uses the service default of 300 tokens / 20% overlap,
 and the API was measured to require omitting `chunkingConfiguration`. Two paths
@@ -214,7 +216,7 @@ direct deletion path — not a second line of defense.
 Managed KB retrieval must use `managedSearchConfiguration`. Using
 `vectorSearchConfiguration` **silently returns zero hits** without an error.
 
-### 4.5 The three quotas most worth noting
+### 4.5 Three quotas to verify
 
 | Quota | Managed KB | Difference from Classic |
 | --- | ---: | --- |
@@ -248,7 +250,7 @@ byte-identical documents), 44 queries, 408 `Retrieve` calls and two reranking
 modes. Full numbers are in the
 [metadata comparison experiment](docs/METADATA_EXPERIMENT.md).
 
-### 5.1 The largest gain: runtime metadata filters
+### 5.1 The clearest measured gain: runtime metadata filters
 
 | Technique | Effect |
 | --- | --- |
@@ -298,7 +300,7 @@ numbers are in the
 PYTHON_BIN=.venv-agentic/bin/python ./scripts/16_compare_semantic_chunking.sh
 ```
 
-### 5.4 Two traps that lead to misjudging coverage
+### 5.4 Two sources of coverage misjudgment
 
 **`actions=[]` is not a fault.** In agentic retrieval `maxAgentIteration` is a
 ceiling, not a guarantee. In the measured run, planning returned `actions=[]` and
@@ -320,12 +322,11 @@ diff can answer it — Managed KB exposes no comparable underlying vector index,
 behavioral changes in chunking, embedding and ranking are observable only through
 retrieval regression.
 
-**This section establishes facts; it does not set criteria.** How much retrieval
-regression is unacceptable depends on business tolerance, what this content is
-used for, and the cost of rolling back — that decision belongs to the business
-side, and this repository does not make it for them. What follows is: what to
-measure, how to measure it, how to read the result, and what the measurement
-cannot tell you.
+**This section reports measurements but does not set business criteria.** The
+acceptable amount of retrieval regression depends on business tolerance,
+content use, and rollback cost, and must be set by the accountable business
+owner. The following sections define the measurements, their interpretation,
+and their limits.
 
 ### 6.1 Three diffs, all required
 
@@ -440,11 +441,10 @@ observation window.
 
 ## 7. Platform implementation
 
-**This section is the vehicle for the six above, not the point of this
-repository.** Readers who only want the ingestion, tuning, retrieval and
-evaluation material can skip it. The reason it goes this far is that if the gate
-order in 6.4 depended on developer discipline, someone would eventually bypass
-it; encoded as state machine topology, it cannot be bypassed.
+This section describes the implementation of the preceding material. Readers
+focused only on ingestion, tuning, retrieval, and evaluation can skip it. The
+state machine topology enforces the gate order in 6.4 instead of relying on each
+caller to preserve it.
 
 ### 7.1 Three stacks and the release state machine
 

@@ -12,7 +12,7 @@
 
 ## 2. Metadata 存储模型
 
-Metadata 不是只存在一个位置，而是四层派生关系：
+Metadata 在四层之间传递，关系如下：
 
 | 层 | 存储位置 | 角色 |
 | --- | --- | --- |
@@ -126,8 +126,8 @@ Sidecar 最大 3,586 Bytes，低于 10 KB 限制。
 | `best_practice_id=GAMESEC05-BP01` | 2 | 2/2 |
 | 公开 + Active + 版本下限 | 10 | 10/10 |
 
-负对照中，无 Metadata 组叠加 `classification=PUBLIC` 后返回 0 条。这证明
-Sidecar 的确定性价值是路由、权限、生命周期、溯源与治理，而不是保证提升
+负对照中，无 Metadata 组叠加 `classification=PUBLIC` 后返回 0 条。该结果确认
+Sidecar 可用于路由、权限、生命周期、溯源与治理；本实验未证明其能够提升
 Semantic Relevance。
 
 ## 8. 扩展召回实验
@@ -211,7 +211,7 @@ Metadata Filter 是候选约束，不是确定性主键读取。Managed Search �
 `document_id` 确定性读取全部文档，不能把向量 Retrieve 当作文档数据库查询；
 应从 S3/内容系统读取，或维护可按主键访问的 Canonical Store。
 
-## 9. 结论与选择
+## 9. 结论与默认配置
 
 1. **生产语料应有 Metadata。** 无 Metadata 时无法执行分类、版本、主题或控制项
    Filter，也没有业务溯源字段。

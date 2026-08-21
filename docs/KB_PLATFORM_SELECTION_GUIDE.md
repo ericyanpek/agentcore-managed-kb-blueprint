@@ -1,4 +1,4 @@
-# Knowledge Base / RAG 平台全维度选型指南
+# Knowledge Base / RAG 平台选型指南
 
 研究日期：2026-08-03
 
@@ -11,7 +11,8 @@ AgentCore Gateway、Observability 和 MCP 原生集成，因此也经常被简�
 “AgentCore Managed Knowledge Base”。它不同于传统的、由客户选择向量存储的
 Amazon Bedrock `VECTOR` Knowledge Base。
 
-市场上的“Knowledge Base”至少分为四类，不能只比较向量检索性能：
+市场上的“Knowledge Base”至少分为四类。选型范围应覆盖完整服务边界，而非仅比较
+向量检索性能：
 
 | 类别 | 代表产品 | 供应商负责范围 |
 | --- | --- | --- |
@@ -24,9 +25,9 @@ Amazon Bedrock `VECTOR` Knowledge Base。
 连接器、解析、Chunking、Embedding、同步、ACL、Rerank、引用、生成、评测和
 可观测性，它仍属于自建 RAG。
 
-## 2. 执行摘要
+## 2. 选型摘要
 
-### 默认建议
+### 按主要约束选择
 
 1. **AWS/AgentCore 优先**：需要快速给 AgentCore、Strands、LangChain 或任意
    MCP Agent 提供企业知识，且能接受 AWS 托管边界时，优先 Bedrock Managed KB。
@@ -44,9 +45,9 @@ Amazon Bedrock `VECTOR` Knowledge Base。
 6. **控制、驻留或差异化优先**：需要私有部署、Air Gap、特殊 Chunking、专用
    Embedding、复杂混合排序、极端规模或复用现有数据库时，自建 RAG 更合理。
 
-### 不建议直接给出单一“市场最佳”
+### 不存在脱离约束的统一最优解
 
-平台优劣高度依赖以下四个约束：
+平台选择取决于以下四项约束：
 
 - 数据是否已经集中在 AWS、Microsoft 365、Google Workspace 或某一数据库。
 - 是否必须继承源系统的文档级 ACL，并进行实时权限复核。
@@ -202,7 +203,7 @@ ISV 选型必须额外审查：
 8. Trace、Metric、Audit、Cost Attribution、Backup、RPO/RTO 和容量规划。
 9. 删除传播、Retention、Legal Hold、数据主体删除和模型/索引血缘。
 
-只比较“向量写入成本”和“Top-K 查询延迟”会系统性低估自建 TCO。
+仅比较“向量写入成本”和“Top-K 查询延迟”会遗漏上述生产能力，因而低估自建 TCO。
 
 ## 6. 场景评分
 

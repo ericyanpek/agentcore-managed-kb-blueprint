@@ -2,7 +2,7 @@
 
 **中文（默认）** | [English](README.en.md)
 
-本仓库回答四个问题，每个都有实测数字或可运行代码支撑：
+本仓库围绕四个问题组织，结论均附实测数据或可运行代码：
 
 | # | 问题 | 在哪里 |
 | --- | --- | --- |
@@ -17,7 +17,8 @@
 语料使用 AWS Well-Architected 游戏行业视角白皮书，实测于 2026-08 完成。
 
 发布流水线的基础设施实现（CDK、Step Functions、DynamoDB 原子指针）见
-[平台工程实现](#7-平台工程实现)——那是第 1 和第 4 项的执行载体，不是本仓库的重点。
+[平台工程实现](#7-平台工程实现)。该实现承载第 1 和第 4 项，正文仍以摄入、
+检索和评测方法为主。
 
 ## 1. 先看结论
 
@@ -156,7 +157,7 @@ CloudFormation schema 语法上允许这个组合，服务端语义拒绝——�
      "filterConfiguration": {"inclusionPrefixes": ["canonical/demo/"]}}}}
 ```
 
-### 4.2 Chunking 与 Embedding：几乎没有旋钮
+### 4.2 Chunking 与 Embedding：可调参数有限
 
 Managed Embedding 当前使用服务默认的 300 Tokens / 20% Overlap，
 实测 API 要求省略 `chunkingConfiguration`。需要控制分块就只有两条路：
@@ -190,7 +191,7 @@ Managed Embedding 当前使用服务默认的 300 Tokens / 20% Overlap，
 Managed KB 检索必须用 `managedSearchConfiguration`。
 用 `vectorSearchConfiguration` 会**静默返回零命中**而不报错。
 
-### 4.5 配额中最值得注意的三条
+### 4.5 需要重点核对的三项配额
 
 | 配额 | Managed KB | 与 Classic 的差别 |
 | --- | ---: | --- |
@@ -221,7 +222,7 @@ Metadata 的权威副本应保存在事实源旁的 Sidecar；Managed KB 中的 
 两种 Rerank 模式的对照实测。完整数字见
 [Metadata 对照实验](docs/METADATA_EXPERIMENT.md)。
 
-### 5.1 增益最大的一项：Runtime Metadata Filter
+### 5.1 实测效果最明显的一项：Runtime Metadata Filter
 
 | 手段 | 效果 |
 | --- | --- |
@@ -265,7 +266,7 @@ PYTHON_BIN=.venv-agentic/bin/python ./scripts/20_expand_metadata_retrieval.sh
 PYTHON_BIN=.venv-agentic/bin/python ./scripts/16_compare_semantic_chunking.sh
 ```
 
-### 5.4 两个会误判覆盖度的陷阱
+### 5.4 两类覆盖度误判
 
 **`actions=[]` 不等于异常。** Agentic Retrieval 中 `maxAgentIteration` 是上限而非
 保证。实测里 Planning 返回 `actions=[]` 未触发第二轮检索，结果是宽泛问题漏掉了
@@ -282,9 +283,9 @@ Grounded failure 只能作为索引状态的证据，不能作为语料覆盖范
 Source Diff 和 Manifest Diff 都答不了——Managed KB 不暴露可比较的底层向量索引，
 分块、Embedding 和排序的行为变化只能通过检索回归观察。
 
-**本节只负责把事实摆清楚，不给判据。** 检索质量退多少算不可接受，取决于业务
-容错度、这批内容的用途和回退成本——那是业务方的决定，本仓库不代替。
-下面给的是：测什么、怎么测、结果怎么读、以及测量本身答不了什么。
+**本节报告测量结果，不设业务判据。** 可接受的检索质量退化幅度取决于业务
+容错度、内容用途和回退成本，应由业务责任方确定。下文说明测量对象、方法、
+结果解释及其适用边界。
 
 ### 6.1 三种 Diff，缺一不可
 
@@ -382,9 +383,8 @@ Manifest 记录每个文档的 `s3VersionId`，所以回滚是版本精确的：
 
 ## 7. 平台工程实现
 
-**这一节是前六节的执行载体，不是本仓库的重点。** 只想理解摄入、调优、检索和
-评测的读者可以跳过。之所以做到这个程度，是因为第 6.4 节的门禁顺序如果靠代码
-自觉去保证，迟早会有人绕过——把它编码成状态机拓扑就绕不过去。
+本节给出前六节对应的工程实现。只需了解摄入、调优、检索和评测方法的读者可跳过。
+第 6.4 节的门禁顺序由状态机拓扑强制执行，不依赖调用方自行遵守。
 
 ### 7.1 三个 Stack 与发布状态机
 
